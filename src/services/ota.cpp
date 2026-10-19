@@ -80,6 +80,13 @@ unsigned long s_wifi_up_ms = 0;
 esp_timer_handle_t s_trial_timer = nullptr;
 volatile bool s_drawn = false;
 volatile bool s_check_now = false;
+/**
+ * "Check now" waits this long: the button is pressed on the settings page,
+ * and a TLS handshake started while that page is still being served can run
+ * short of memory (seen as HTTP -1).
+ */
+constexpr unsigned long kCheckNowDelayMs = 15000;
+volatile unsigned long s_check_now_at_ms = 0;
 /** A trial failed this boot: wait for the next boot (≤ a day) to try again. */
 bool s_hold_this_boot = false;
 unsigned long s_next_check_ms = 0;
@@ -520,7 +527,8 @@ bool runIfDue() {
     return false;
   }
   const unsigned long now = millis();
-  if (!s_check_now && static_cast<long>(now - s_next_check_ms) < 0) {
+  const bool asked = s_check_now && static_cast<long>(now - s_check_now_at_ms) >= 0;
+  if (!asked && static_cast<long>(now - s_next_check_ms) < 0) {
     return false;
   }
   s_check_now = false;
@@ -575,7 +583,10 @@ void checkTrial() {
   }
 }
 
-void requestCheck() { s_check_now = true; }
+void requestCheck() {
+  s_check_now_at_ms = millis() + kCheckNowDelayMs;
+  s_check_now = true;
+}
 
 bool wantsDisplay() { return s_want_display; }
 

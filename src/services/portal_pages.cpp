@@ -534,7 +534,7 @@ void handleUpdateCheck(WebServer& server) {
   services::ota::requestCheck();
   sendPageStart(server, "Updates", kSettingsPath, 20);
   server.sendContent(
-      "<div class='ok'>Looking for an update now. This page goes back to the "
+      "<div class='ok'>Looking for an update in a moment. This page goes back to the "
       "settings in 20 seconds; the result is under About.</div>");
   sendPageEnd(server);
 }

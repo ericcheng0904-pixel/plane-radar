@@ -3,6 +3,12 @@
 Releases are installed over the air by radars running an earlier release
 (docs/OTA.md). Newest first.
 
+## v2.0.8
+
+- "Check for an update now" checks 15 s after the button, once the page has
+  been sent: a check started while the page was still being served could
+  run short of memory and fail (HTTP -1).
+
 ## v2.0.7
 
 - Release used to test the trial boot of v2.0.6's code (no change).
