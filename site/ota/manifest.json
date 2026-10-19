@@ -1,8 +1,8 @@
 {
-  "version": "v2.0.2",
+  "version": "v2.0.3",
   "size": 1578672,
-  "sha256": "8ca4cd91efe78a3a194a89d9c1821ad08393003389b68da92318b1d9167e50b5",
-  "sig": "MEUCIQCssPmWR8fDWTImH7bZaTXT/c98wLinVnRdq9AsPVWKYAIgbhMb1WLvRsnguNHt+qMlLNsJb+PVMUH8bHLlSvN9nmI=",
+  "sha256": "500c5e88307b7e8033209b1d46d003904cb333f4cfcf556ac94d48257d88d126",
+  "sig": "MEQCIHKio+p7UJR25GT62AqDLKFFJ6TDF95qazJZJ7iPBr3XAiBpA2odFzUMAYvIxQH78eHYjMVsCf1o8oD1jqOrd6OfEw==",
   "min_free_heap_hint": 57344,
-  "notes": "Updates borrow the frame buffer; more free memory"
+  "notes": "First update over the air"
 }
