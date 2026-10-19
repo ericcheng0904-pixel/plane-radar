@@ -1226,7 +1226,8 @@ bool nightNow() {
   if (s_night_checked_ms != 0 && millis() - s_night_checked_ms < 60000UL) {
     return s_night;
   }
-  s_night_checked_ms = millis() | 1UL;
+  const unsigned long now = millis();
+  s_night_checked_ms = now != 0 ? now : 1;  // 0 means "never"; not `| 1`, a future time
   uint32_t utc = 0;
   s_night = radar::dimAtNight() && services::location::isSet() &&
             services::adsb::utcNow(&utc) &&

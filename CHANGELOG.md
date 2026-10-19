@@ -3,6 +3,12 @@
 Releases are installed over the air by radars running an earlier release
 (docs/OTA.md). Newest first.
 
+## v2.0.9
+
+- Fix: a new release on trial was rolled back the moment Wi-Fi came up
+  whenever the clock read an even number of milliseconds (half of all
+  updates; v2.0.6 and v2.0.8 were rolled back this way).
+
 ## v2.0.8
 
 - "Check for an update now" checks 15 s after the button, once the page has

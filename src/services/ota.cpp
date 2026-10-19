@@ -554,7 +554,10 @@ void checkTrial() {
   }
   const unsigned long now = millis();
   if (WiFi.status() == WL_CONNECTED && s_wifi_up_ms == 0) {
-    s_wifi_up_ms = now | 1UL;
+    // Not `now | 1`: for an even `now` that is a moment in the future, and
+    // `now - s_wifi_up_ms` below wraps to ~49 days: every second trial was
+    // rolled back the moment Wi-Fi came up.
+    s_wifi_up_ms = now != 0 ? now : 1;
   }
   if (WiFi.status() == WL_CONNECTED && s_drawn && services::adsb::lastUpdateMs() != 0 &&
       now >= kConfirmAfterMs) {
