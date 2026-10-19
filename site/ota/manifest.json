@@ -1,8 +1,8 @@
 {
-  "version": "v2.0.6",
+  "version": "v2.0.7",
   "size": 1579248,
-  "sha256": "0816742537164c95dd335338aed66936e737368faa93a4cda1f6041221e97abc",
-  "sig": "MEQCIHLOJzhqavbltu9r8/LrM/rDt3BLMNKb7+cxTXOg6LaXAiBSENeql+boN1A2cCAd5ijIkb6mWe/BnnFUv6Odfw5pfQ==",
+  "sha256": "1af38253f4d6a809cbfe9bdc99173566e750e00a1d9190555a0308f3c15657c3",
+  "sig": "MEUCIQCT37yBt7i4a2XpZL5nCoO8dJM5MUR5GiDT48ZlewXiYAIgU8GjA2YRQsobBaInzaWe9AXRI72ZAna0dM41gBL/mnk=",
   "min_free_heap_hint": 57344,
-  "notes": "Restart after phone setup; folded location form"
+  "notes": "Test release"
 }
