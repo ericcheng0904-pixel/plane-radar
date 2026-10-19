@@ -3,6 +3,11 @@
 Releases are installed over the air by radars running an earlier release
 (docs/OTA.md). Newest first.
 
+## v2.0.3
+
+- First update delivered over the air from GitHub Pages (no functional
+  change).
+
 ## v2.0.2
 
 - Updates free the screen's frame buffer while they download (it showed
