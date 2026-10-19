@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plane Radar Installer</title>
+<meta name="description" content="Install or repair the Plane Radar firmware from your browser.">
+<!--
+  The web installer. Published by .github/workflows/pages.yml from site/;
+  manifest.json and the files it names are written by scripts/make_release.py.
+  ESP Web Tools is pinned to an exact version: npm never changes a published
+  version, so this page keeps working the same way until someone edits it.
+-->
+<script type="module" src="https://cdn.jsdelivr.net/npm/esp-web-tools@10.4.0/dist/web/install-button.js"></script>
+<style>
+  :root {
+    --bg: #f7f7f4;
+    --text: #1d1f21;
+    --muted: #55595e;
+    --card: #ffffff;
+    --border: #d9dad6;
+    --accent: #0b5cad;
+    --accent-text: #ffffff;
+    --warn-bg: #fff4d6;
+    --warn-border: #e2b93b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #15171a;
+      --text: #ecedee;
+      --muted: #a5a9ae;
+      --card: #1e2125;
+      --border: #33373c;
+      --accent: #4c9be8;
+      --accent-text: #0b1520;
+      --warn-bg: #3a3217;
+      --warn-border: #a5852a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 18px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 42rem; margin: 0 auto; padding: 2rem 16px 3rem; }
+  h1 { font-size: 1.9rem; line-height: 1.2; margin: 0 0 .5rem; }
+  h2 { font-size: 1.25rem; margin: 2rem 0 .5rem; }
+  p, li { max-width: 38rem; }
+  ol { padding-left: 1.4rem; }
+  li { margin: .45rem 0; }
+  .lead { color: var(--muted); margin-top: 0; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem 1.25rem 1rem;
+    margin: 1.5rem 0;
+  }
+  .note {
+    background: var(--warn-bg);
+    border: 1px solid var(--warn-border);
+    border-radius: 12px;
+    padding: 1rem 1.25rem;
+  }
+  .install { text-align: center; padding: .5rem 0 .75rem; }
+  .install button {
+    font: inherit;
+    font-weight: 600;
+    font-size: 1.15rem;
+    padding: .8rem 2.2rem;
+    border: 0;
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--accent-text);
+    cursor: pointer;
+  }
+  .install button:focus-visible { outline: 3px solid var(--text); outline-offset: 3px; }
+  .version { color: var(--muted); font-size: .95rem; margin: .5rem 0 0; }
+  [hidden] { display: none !important; }
+  a { color: var(--accent); }
+  footer { color: var(--muted); font-size: .9rem; margin-top: 2.5rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Plane Radar</h1>
+  <p class="lead">Install or repair the radar's software from this page.</p>
+
+  <p>The radar keeps itself up to date over Wi-Fi, so most people never need
+  this page. Use it to set up a new radar, or to repair one that no longer
+  starts.</p>
+
+  <h2>What you need</h2>
+  <ul>
+    <li>A computer (Windows, Mac, Linux or Chromebook) with
+      <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong>.
+      Phones, tablets, Safari and Firefox cannot do this.</li>
+    <li>A USB-C cable that carries data. Some cables only charge; if the radar
+      does not show up in step&nbsp;3, try a different cable.</li>
+  </ul>
+
+  <div class="card">
+    <h2 style="margin-top:0">Install</h2>
+    <ol>
+      <li>Plug the radar into the computer.</li>
+      <li>Press <strong>Install</strong> below.</li>
+      <li>A small window lists devices. Choose the one called
+        <strong>USB JTAG/serial debug unit</strong> and press
+        <strong>Connect</strong>.</li>
+      <li>Press <strong>Install Plane Radar</strong>. You are asked whether to
+        erase the radar first &mdash; see <a href="#erase">below</a>. Then
+        confirm.</li>
+      <li>Wait one to two minutes until it says it is done. Do not unplug the
+        radar while it is installing.</li>
+      <li>Unplug the radar and plug it back into its usual power supply.</li>
+    </ol>
+    <div class="install" id="install">
+      <esp-web-install-button manifest="manifest.json">
+        <button slot="activate">Install</button>
+        <span slot="unsupported">This browser cannot install. Open this page
+          in Google Chrome or Microsoft Edge on a computer.</span>
+        <span slot="not-allowed">This page has to be opened through its
+          https:// address.</span>
+      </esp-web-install-button>
+      <p class="version" id="version"></p>
+    </div>
+    <p class="note" id="unpublished" hidden>No software has been published
+      here yet, so there is nothing to install.</p>
+  </div>
+
+  <h2 id="erase">Erase or not?</h2>
+  <p><strong>Erasing deletes everything the radar remembers:</strong> the
+  Wi-Fi network and its password, your location, and the display settings.
+  Afterwards the radar starts with a yellow setup screen and you set it up
+  again, just as on the first day.</p>
+  <ul>
+    <li><strong>Leave it unticked</strong> to keep those settings. This is
+      the usual choice for a repair.</li>
+    <li><strong>Tick it</strong> for the very first install on a new radar, or
+      if the radar still misbehaves after installing without erasing.</li>
+  </ul>
+
+  <h2>If the radar does not appear in the list</h2>
+  <ul>
+    <li>Try another USB-C cable, or another USB port on the computer.</li>
+    <li>Unplug the radar. Hold down the small <strong>BOOT</strong> button on
+      the board, plug the radar in while holding it, then let go, and press
+      <strong>Install</strong> again.</li>
+  </ul>
+
+  <h2>After installing</h2>
+  <p>If the screen turns yellow, the radar needs its Wi-Fi: on a phone, join
+  the Wi-Fi network <strong>PlaneRadar-Setup</strong> with the password shown
+  on the radar's screen, then open <strong>http://plane-radar.local</strong>
+  and choose your home network.</p>
+
+  <footer>
+    <p>The installer runs entirely in your browser and sends nothing about you
+    or your radar anywhere. Source code:
+    <a href="https://github.com/ericcheng0904-pixel/plane-radar">github.com/ericcheng0904-pixel/plane-radar</a>.</p>
+  </footer>
+</main>
+<script>
+  // Show which version would be installed, and say so plainly when nothing
+  // has been published yet instead of offering a button that cannot work.
+  fetch("manifest.json", { cache: "no-store" })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .catch(function () { return null; })
+    .then(function (manifest) {
+      if (manifest && manifest.version) {
+        document.getElementById("version").textContent = "Version " + manifest.version;
+      } else {
+        document.getElementById("install").hidden = true;
+        document.getElementById("unpublished").hidden = false;
+      }
+    });
+</script>
+</body>
+</html>

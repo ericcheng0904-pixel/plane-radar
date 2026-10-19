@@ -1,0 +1,66 @@
+# Publish site/ -- the web installer and the over-the-air update manifest --
+# to GitHub Pages: https://ericcheng0904-pixel.github.io/plane-radar/
+#
+# Nothing is built or signed here. The maintainer signs a release on their own
+# computer with scripts/make_release.py and commits site/ (docs/RELEASING.md);
+# this only checks the committed files the way a radar will and deploys them.
+# One-time setup: Settings -> Pages -> Source: "GitHub Actions".
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "include/ota_public_key.h"
+      - "scripts/make_release.py"
+      - "scripts/ota_common.py"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never cancel a deployment half way; queue the next one behind it.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install the release tools' dependencies
+        run: pip install -r scripts/requirements-release.txt
+
+      - name: Verify the release as a radar would
+        # Manifest, size, SHA-256 and signature against the committed public
+        # key; no logos; the installer's four parts and offsets. A site that
+        # would make radars refuse the update, or worse accept the wrong one,
+        # is not deployed.
+        run: python3 scripts/make_release.py --verify-site site
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

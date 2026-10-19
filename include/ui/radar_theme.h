@@ -1,8 +1,12 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
+#include "config.h"
+
 #include "hardware/display_font.h"
+#include "ui/panel_color.h"
 
 namespace ui::radar {
 
@@ -96,10 +100,20 @@ constexpr int kAircraftLabelGapPx = 1;
 /** Airline names are cut to this width so a tag cannot swallow the radar. */
 constexpr int kAircraftTagMaxWidthPx = 96;
 
-/** Trail: neutral grey, so the panel's colour order cannot tint it. */
-constexpr uint8_t kTrailGrey = 96;
-/** Points drawn behind each aircraft; the newest is the symbol itself. */
-constexpr size_t kTrailDrawPoints = 7;
+/**
+ * Trail length in time. Points are recorded once per fetch, so the count is
+ * derived from the fetch interval rather than fixed: at 10 s per fetch a fixed
+ * seven points drew 70 s of history as long lines across the disc.
+ */
+constexpr unsigned long kTrailSeconds = 30;
+constexpr size_t kTrailDrawPoints =
+    (kTrailSeconds * 1000 + config::kAdsbFetchIntervalMs - 1) / config::kAdsbFetchIntervalMs;
+
+// Colours now live per theme in ui/theme.cpp.
+constexpr int kTickMinorPx = 3;
+constexpr int kTickMajorPx = 6;
+/** How far the speed vector is mixed from background toward the glyph colour. */
+constexpr float kTrackVectorStrength = 0.6f;
 /** Keep symbol centroid inside outer ring by at least this inset (px). */
 constexpr int kAircraftInsideRingInsetPx =
     kAircraftNoseLenPx + kAircraftTailHalfPx + 1;

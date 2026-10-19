@@ -36,10 +36,36 @@ jobs:
           python-version: "3.11"
 
       - name: Install PlatformIO
-        run: pip install --upgrade platformio
+        # Pinned, like build.yml: the same tests on the same tools next year.
+        run: pip install platformio==6.2.0
 
       - name: Run tests
         run: pio test -e native
+
+  release-tools:
+    name: Release signing and site checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install the release tools' dependencies
+        run: pip install -r scripts/requirements-release.txt
+
+      # Signs a synthetic build with a throwaway key and verifies it the way a
+      # radar will (docs/OTA.md); checks every refusal of make_release.py and
+      # ota_keygen.py, and that the partition table, version grammar and
+      # User-Agent agree with the firmware.
+      - name: Run the release tool tests
+        run: python3 -m unittest discover -s tools/ota -v
+
+      - name: Verify the committed site
+        run: python3 scripts/make_release.py --verify-site site
 
   portal-page:
     name: Portal settings page renders whole
@@ -58,8 +84,25 @@ jobs:
               -I include -I tools/host_checks/stubs \
               tools/host_checks/portal_page_test.cpp \
               src/services/portal_pages.cpp \
+              src/util/coords.cpp src/util/setup_text.cpp \
               -o /tmp/portal_page_test
           /tmp/portal_page_test
+
+  no-logos:
+    name: No airline logos in the repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Airline logos are the airlines' trademarks. They live in a private
+      # logo pack (.cache/logo-pack.bin, git-ignored) flashed to the radar's
+      # own partition; anything built from this repository, releases and OTA
+      # images included, must be logo-free. Fails on logo arrays, image-like
+      # hex data, the pack or a *.local.h logo file being tracked, or any
+      # tracked file over 1 MB.
+      - name: Check tracked files
+        run: python3 scripts/check_no_logos.py
 
   static-analysis:
     name: Static analysis

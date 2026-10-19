@@ -1,7 +1,19 @@
-# 4 MB flash — single large app (no OTA slot). Plane Radar + runway dataset.
-# Name,   Type, SubType, Offset,  Size, Flags
-nvs,      data, nvs,     0x9000,  0x5000,
-otadata,  data, ota,     0xe000,  0x2000,
-app0,     app,  ota_0,   0x10000, 0x300000,
-spiffs,   data, spiffs,  0x310000,0xE0000,
-coredump, data, coredump,0x3F0000,0x10000,
+# 4 MB flash, two app slots for signed over-the-air updates (docs/OTA.md).
+#
+# nvs keeps the offset and size it has had since the first release, so the
+# saved Wi-Fi, location and settings survive flashing this layout over an
+# older one. ota_0 and ota_1 are the same size: an update is written to
+# whichever slot is not running, so every image has to fit both. A logo-free
+# image is ~1.5 MB; scripts/size_guard.py fails the build above 0x1C0000.
+# "logos" (data, custom subtype 0x40) holds the private airline logo pack
+# (scripts/build_airline_brands.py --logos), flashed once over USB. Nothing
+# mounts it and updates never write it. After flashing over the old layout it
+# holds whatever was there before, so the reader (src/data/airline_logos.cpp)
+# checks the pack's header and CRC and ignores anything else.
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
+app0,     app,  ota_0,   0x10000,  0x1C0000,
+app1,     app,  ota_1,   0x1D0000, 0x1C0000,
+logos,    data, 0x40,    0x390000, 0x60000,
+coredump, data, coredump,0x3F0000, 0x10000,

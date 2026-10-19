@@ -26,4 +26,25 @@ inline bool validLatLon(double lat, double lon) {
  */
 bool parseCoordinate(const char* text, double* out);
 
+/**
+ * One pasted latitude/longitude pair, in the forms a phone hands out:
+ *
+ *   "41.9786, -87.9048"  "41.9786 -87.9048"  "(41.9786,-87.9048)"
+ *   "41.9786° N, 87.9048° W"                       (Apple Maps)
+ *   ".../maps/place/.../@41.9786,-87.9048,15z/..."  (Google Maps, "@lat,lon,")
+ *   "...?q=41.9786,-87.9048"  "...&query=..."  "...?ll=..."  ("%2C" as comma)
+ *
+ * The person setting the radar up copies these from a map app; asking them
+ * to split the pair into two fields was where setup went wrong. Numbers are
+ * plain decimals only — no exponent, hex, "inf" or "nan", at most 3 integer
+ * and 15 fractional digits — and a hemisphere letter replaces the sign rather
+ * than adding to it. Returns false, leaving the outputs untouched, for
+ * anything else, including a third number in plain text, a pair out of range
+ * and input longer than kMaxPairText.
+ */
+bool parseLatLonPair(const char* text, double* lat, double* lon);
+
+/** Longest text parseLatLonPair() looks at; a Google Maps place link fits. */
+constexpr unsigned kMaxPairText = 1024;
+
 }  // namespace util::coords

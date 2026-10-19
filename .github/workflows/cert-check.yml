@@ -1,0 +1,27 @@
+# Radars in the field check servers against the root bundle they shipped with.
+# Once a month, check that every server they talk to still passes that check,
+# so a change on the servers' side is noticed before the radars go dark.
+name: Certificate check
+
+on:
+  schedule:
+    - cron: "17 6 3 * *"
+  workflow_dispatch:
+
+jobs:
+  hosts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install cryptography
+        run: pip install cryptography
+
+      - name: Check every host against the bundle
+        run: python3 scripts/check_hosts_against_bundle.py

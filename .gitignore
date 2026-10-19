@@ -5,3 +5,12 @@ release/
 .vscode/launch.json
 .vscode/ipch
 data/.noto-sans-semibold.ttf
+.cache/
+
+# Python bytecode from scripts/, imported by the build and the release tools
+__pycache__/
+
+# Airline logos are the airlines' trademarks. This private pack is written by
+# scripts/build_airline_brands.py --logos and flashed over USB; it must never be
+# committed. (.cache/ above covers it too.)
+.cache/logo-pack.bin

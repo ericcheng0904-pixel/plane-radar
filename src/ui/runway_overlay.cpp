@@ -10,6 +10,7 @@
 #include "services/radar_location.h"
 #include "ui/radar_range.h"
 #include "ui/radar_theme.h"
+#include "ui/wide_line.h"
 
 namespace ui::runway {
 namespace {
@@ -131,16 +132,9 @@ bool segmentIntersectsDisc(int x0, int y0, int x1, int y1) {
 }
 
 void drawBoldRunwayLabel(lgfx::LGFXBase& gfx, const char* ident, int mx, int my) {
-  const int tw = gfx.textWidth(ident);
-  const int th = gfx.fontHeight();
-  constexpr int kPadX = 2;
-  constexpr int kPadY = 1;
-
   gfx.setTextDatum(textdatum_t::bottom_center);
-  const int left = mx - tw / 2 - kPadX;
-  const int top = my - th - kPadY;
-  gfx.fillRect(left, top, tw + kPadX * 2, th + kPadY, radar::kColorBackground);
-  gfx.setTextColor(radar::kColorRunwayLabel, radar::kColorBackground);
+  // Foreground only, so the label blends into the scope's gradient.
+  gfx.setTextColor(radar::kColorRunwayLabel);
   gfx.drawString(ident, mx - 1, my);
   gfx.drawString(ident, mx + 1, my);
   gfx.drawString(ident, mx, my);
@@ -166,8 +160,7 @@ bool drawRunwayLine(lgfx::LGFXBase& gfx, const data::large_airports::Runway& rw)
   clipPointToOuterRing(x0, y0, &x1, &y1);
   clipPointToOuterRing(x1, y1, &x0, &y0);
 
-  gfx.drawWideLine(x0, y0, x1, y1, radar::kRunwayLineHalfWidth,
-                   radar::kColorRunway);
+  wideLine(gfx, x0, y0, x1, y1, radar::kRunwayLineHalfWidth, radar::kColorRunway);
   return true;
 }
 
@@ -216,24 +209,40 @@ void drawAirportLabel(lgfx::LGFXBase& gfx,
 
 }  // namespace
 
-void drawLargeAirportRunways(lgfx::LGFXBase& gfx) {
-  if (!radar::showRunways()) {
+namespace {
+
+/**
+ * Runways near the radar centre, found once per range / centre change. Testing
+ * all of kRunwayCount every frame cost ~50 ms (a soft-float cosf per airport)
+ * of a 4 Hz redraw; only a handful are ever in range.
+ */
+constexpr size_t kMaxVisibleRunways = 64;
+uint16_t s_visible[kMaxVisibleRunways];
+size_t s_visible_count = 0;
+float s_cached_radius_km = -1.0f;
+double s_cached_lat = 1000.0;
+double s_cached_lon = 1000.0;
+
+void refreshVisibleRunways() {
+  const float radius_km = radar::fetchRadiusKm();
+  const double lat = services::location::lat();
+  const double lon = services::location::lon();
+  if (radius_km == s_cached_radius_km && lat == s_cached_lat && lon == s_cached_lon) {
     return;
   }
-  const float radius_km = radar::fetchRadiusKm();
-
-  uint16_t label_airports[kMaxAirportLabels];
-  size_t label_count = 0;
+  s_cached_radius_km = radius_km;
+  s_cached_lat = lat;
+  s_cached_lon = lon;
+  s_visible_count = 0;
 
   for (size_t i = 0; i < data::large_airports::kAirportCount; ++i) {
     s_in_range[i] = false;
-    s_label_pending[i] = false;
+    s_label_pending[i] = false;  // reused here as "distance already tested"
   }
-
   for (size_t i = 0; i < data::large_airports::kRunwayCount; ++i) {
-    const auto& rw = data::large_airports::kRunways[i];
-    const uint16_t ap_idx = rw.airport_idx;
-    if (!s_in_range[ap_idx]) {
+    const uint16_t ap_idx = data::large_airports::kRunways[i].airport_idx;
+    if (!s_label_pending[ap_idx]) {
+      s_label_pending[ap_idx] = true;
       const auto& ap = data::large_airports::kAirports[ap_idx];
       float dx_km = 0.0f;
       float dy_km = 0.0f;
@@ -242,9 +251,29 @@ void drawLargeAirportRunways(lgfx::LGFXBase& gfx) {
                          &dist_km);
       s_in_range[ap_idx] = (dist_km <= radius_km);
     }
-    if (!s_in_range[ap_idx]) {
-      continue;
+    if (s_in_range[ap_idx] && s_visible_count < kMaxVisibleRunways) {
+      s_visible[s_visible_count++] = static_cast<uint16_t>(i);
     }
+  }
+}
+
+}  // namespace
+
+void drawLargeAirportRunways(lgfx::LGFXBase& gfx) {
+  if (!radar::showRunways()) {
+    return;
+  }
+  refreshVisibleRunways();
+
+  uint16_t label_airports[kMaxAirportLabels];
+  size_t label_count = 0;
+  for (size_t i = 0; i < data::large_airports::kAirportCount; ++i) {
+    s_label_pending[i] = false;
+  }
+
+  for (size_t v = 0; v < s_visible_count; ++v) {
+    const auto& rw = data::large_airports::kRunways[s_visible[v]];
+    const uint16_t ap_idx = rw.airport_idx;
     if (!drawRunwayLine(gfx, rw)) {
       continue;
     }

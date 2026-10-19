@@ -1,0 +1,4 @@
+# The release tools (ota_keygen.py, make_release.py) and their tests.
+# Pinned: a signing tool that changes under the maintainer between releases is
+# the last thing to debug on release day.
+cryptography==50.0.2

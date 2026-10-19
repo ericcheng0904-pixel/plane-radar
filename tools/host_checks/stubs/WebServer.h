@@ -12,6 +12,11 @@
 
 enum HTTPMethod { HTTP_ANY, HTTP_GET, HTTP_POST };
 
+struct HostClient {
+  bool connected() { return true; }
+  void stop() {}
+};
+
 class WebServer {
  public:
   using THandlerFunction = std::function<void(void)>;
@@ -36,9 +41,14 @@ class WebServer {
     body += content.c_str();
   }
   void sendContent(const String& content) { body += content.c_str(); }
+  void sendContent(const char* data, size_t length) { body.append(data, length); }
   bool hasArg(const char* name) const { return args.count(name) != 0; }
   String arg(const char* name) const {
     const auto it = args.find(name);
     return String(it == args.end() ? "" : it->second.c_str());
   }
+  HostClient& client() { return client_; }
+
+ private:
+  HostClient client_;
 };

@@ -1,0 +1,171 @@
+# ICAO airline codes that get a short name and a code badge in their brand
+# colour on the info card (and a logo in a private build).
+# Chosen from live traffic on 2026-09-29: every airline seen within 250 nm of
+# Chicago, then the busiest carriers at 15 world hubs. Regenerate the table with
+# python3 scripts/build_airline_brands.py after editing; a new airline also
+# wants a colour in that script's BRAND_COLOURS (else it gets a neutral badge).
+
+AAL  # chicago 48
+ABX  # chicago 1
+ABY  # hubs 3
+ACA  # chicago 8
+ADO  # hubs 3
+AFR  # hubs 7
+AIC  # hubs 7
+AMF  # chicago 3
+AMX  # chicago 1
+ANA  # chicago 1
+APJ  # hubs 6
+ASA  # chicago 10
+ASH  # chicago 4
+ATN  # chicago 1
+AXM  # hubs 4
+AZU  # hubs 16
+BAW  # chicago 1
+BCS  # hubs 20
+BOX  # chicago 1
+CAO  # chicago 1
+CAP  # chicago 1
+CCA  # hubs 12
+CDG  # hubs 5
+CES  # hubs 7
+CHH  # hubs 7
+CKS  # chicago 1
+CQH  # hubs 3
+CSJ  # chicago 1
+CTV  # hubs 3
+CUA  # hubs 4
+CXA  # hubs 3
+DAL  # chicago 44
+DLH  # chicago 1
+EDV  # chicago 12
+EIN  # chicago 1
+EJA  # chicago 6
+ENY  # chicago 21
+ETD  # hubs 16
+ETH  # hubs 4
+EXS  # hubs 39
+EZY  # hubs 30
+FDA  # hubs 3
+FDB  # hubs 3
+FDX  # chicago 2
+FFM  # hubs 3
+FFT  # chicago 5
+FLE  # chicago 1
+FRG  # chicago 3
+GIA  # hubs 4
+GJS  # chicago 8
+GLO  # hubs 21
+GTI  # chicago 2
+HBH  # hubs 5
+IGO  # hubs 7
+JAL  # hubs 34
+JBU  # chicago 9
+JIA  # chicago 5
+JJA  # hubs 5
+JJP  # hubs 6
+JST  # hubs 10
+JSX  # hubs 10
+JZA  # chicago 3
+KAC  # hubs 3
+KAL  # hubs 4
+KAP  # hubs 4
+KLM  # hubs 4
+LAN  # hubs 4
+MAS  # hubs 5
+MRA  # chicago 1
+MSC  # hubs 3
+MSR  # hubs 5
+MXD  # hubs 4
+MXY  # chicago 3
+PDT  # hubs 15
+PGT  # hubs 6
+POE  # chicago 2
+QFA  # hubs 17
+QLK  # hubs 10
+QTR  # hubs 29
+QXE  # hubs 5
+RAX  # chicago 1
+ROU  # hubs 5
+RPA  # chicago 25
+RUK  # hubs 4
+RXA  # hubs 5
+RYR  # hubs 32
+SCX  # chicago 4
+SIA  # hubs 5
+SJO  # hubs 3
+SKW  # chicago 45
+SKY  # hubs 6
+SLI  # hubs 4
+SVA  # hubs 4
+SWA  # chicago 66
+SWR  # hubs 4
+SXS  # hubs 12
+TAM  # hubs 42
+TAP  # hubs 5
+THY  # hubs 8
+TOM  # hubs 11
+TRA  # hubs 4
+UAE  # hubs 29
+UAL  # chicago 99
+UCA  # chicago 1
+UPS  # chicago 1
+VIV  # hubs 4
+VOI  # hubs 9
+VOZ  # hubs 18
+VTE  # chicago 2
+VTM  # chicago 1
+WJA  # chicago 1
+WUK  # hubs 3
+AAR  # major carrier (short-name list)
+AAY  # major carrier (short-name list)
+AEE  # major carrier (short-name list)
+AIQ  # major carrier (short-name list)
+ANZ  # major carrier (short-name list)
+ARG  # major carrier (short-name list)
+AUA  # major carrier (short-name list)
+AVA  # major carrier (short-name list)
+AXB  # major carrier (short-name list)
+BEL  # major carrier (short-name list)
+BTI  # major carrier (short-name list)
+CAL  # major carrier (short-name list)
+CEB  # major carrier (short-name list)
+CFG  # major carrier (short-name list)
+CLX  # major carrier (short-name list)
+CMP  # major carrier (short-name list)
+CPA  # major carrier (short-name list)
+CSC  # major carrier (short-name list)
+CSN  # major carrier (short-name list)
+CSZ  # major carrier (short-name list)
+CTN  # major carrier (short-name list)
+DAH  # major carrier (short-name list)
+ELY  # major carrier (short-name list)
+EVA  # major carrier (short-name list)
+EWG  # major carrier (short-name list)
+FIN  # major carrier (short-name list)
+GEC  # major carrier (short-name list)
+GFA  # major carrier (short-name list)
+HAL  # major carrier (short-name list)
+HVN  # major carrier (short-name list)
+IBE  # major carrier (short-name list)
+ICE  # major carrier (short-name list)
+ITY  # major carrier (short-name list)
+KQA  # major carrier (short-name list)
+LOT  # major carrier (short-name list)
+MEA  # major carrier (short-name list)
+MXA  # major carrier (short-name list)
+NKS  # major carrier (short-name list)
+OMA  # major carrier (short-name list)
+PAL  # major carrier (short-name list)
+RAM  # major carrier (short-name list)
+RJA  # major carrier (short-name list)
+SAA  # major carrier (short-name list)
+SAS  # major carrier (short-name list)
+THA  # major carrier (short-name list)
+TSC  # major carrier (short-name list)
+TVS  # major carrier (short-name list)
+TWB  # major carrier (short-name list)
+VIR  # major carrier (short-name list)
+VJC  # major carrier (short-name list)
+VLG  # major carrier (short-name list)
+WZZ  # major carrier (short-name list)

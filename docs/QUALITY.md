@@ -19,12 +19,27 @@ Locally: `pio run -e supermini` and read the output.
 
 `test/test_util/` covers the parsers that sit behind the Wi-Fi setup portal —
 `util::portal::checkboxChecked`, `util::portal::stepIndex`,
-`util::coords::parseCoordinate`, `util::coords::validLatLon`. They run on the
-build machine, so every malformed and hostile field value can be exercised
-without a board, a network, or a flash cycle.
+`util::coords::parseCoordinate`, `util::coords::validLatLon`. `test/test_setup/`
+covers the guided setup: pasted coordinate pairs and map links, the town / ZIP
+code query and the ranking of the geocoder's answers, the Wi-Fi QR text, join
+failure reasons, HTML escaping, and the self-repair rules setup changes. They
+run on the build machine, so every malformed and hostile field value can be
+exercised without a board, a network, or a flash cycle.
 
 ```bash
 pio test -e native
+```
+
+`test/test_ota/` covers the rules the over-the-air updater will follow: which
+version strings are releases, that only a strictly newer release is installed,
+and that the embedded public key is the placeholder or a well-formed point.
+The release tooling has Python tests of its own in `tools/ota/`: they sign a
+synthetic build with a throwaway key, verify it the way a radar will, and check
+every refusal (logos, size, layout, version, key).
+
+```bash
+pip install -r scripts/requirements-release.txt
+python3 -m unittest discover -s tools/ota -v
 ```
 
 Anything reachable from the portal or from the network belongs here. Keep such
@@ -42,6 +57,7 @@ Save button and the closing tag are there.
 ```bash
 g++ -std=gnu++17 -Wall -Wextra -Werror -I include -I tools/host_checks/stubs \
     tools/host_checks/portal_page_test.cpp src/services/portal_pages.cpp \
+    src/util/coords.cpp src/util/setup_text.cpp \
     -o /tmp/portal_page_test && /tmp/portal_page_test
 ```
 
@@ -62,11 +78,29 @@ A finding that is genuinely a false positive gets an inline
 `// cppcheck-suppress <id>` with a comment saying why — never a blanket
 suppression in the workflow.
 
+### No airline logos in the repository
+
+Airline logos are the airlines' trademarks. They live in a private logo pack,
+the git-ignored `.cache/logo-pack.bin` (`scripts/build_airline_brands.py --logos`),
+flashed once over USB into the radar's `logos` partition
+(`esptool.py --chip esp32c3 write_flash 0x390000 .cache/logo-pack.bin`); the
+repository, and therefore every release and OTA image, must stay logo-free.
+`scripts/check_no_logos.py` fails on logo-named arrays, a file full of
+RGB565-style hex data, the pack or a `*.local.h` logo file being tracked, or any
+tracked file over 1 MB.
+
+```bash
+python3 scripts/check_no_logos.py
+```
+
 ## Stage 4 — Firmware build and artifact
 
 `pio run -e supermini`, then `pio run -t merge` for the web-flashable image.
-Fails on link errors and on overflowing a partition, and publishes
-`plane-radar-supermini` (including `firmware-merged.bin`) for download.
+Fails on link errors and when `firmware.bin` outgrows an app slot
+(`scripts/size_guard.py`: over `0x1C0000` fails, over 90 % warns). Before
+`plane-radar-supermini` (including `firmware-merged.bin`) is published for
+download, `make_release.py --check-only` refuses an image with the airline
+logos or a partition table other than the two-slot release layout.
 
 Watch the reported RAM figure. It excludes the 115 KB frame sprite, which is
 allocated at runtime — headroom is tighter than the percentage suggests.
@@ -77,10 +111,18 @@ CI cannot see the display, reach a Wi-Fi network, or press BOOT. Before merging
 anything that touches the UI, the portal, or the network path, flash the build
 and walk this list:
 
-- [ ] Boot with no stored credentials → yellow setup screen shows the AP name,
-      the **AP password**, and the URL, all fully on screen and readable.
-- [ ] Join the setup AP with that password → portal opens; saving Wi-Fi and a
-      location connects and the radar appears.
+- [ ] Boot with no stored credentials → "Step 1 of 2" with a QR code, fully
+      inside the glass. A phone camera joins `PlaneRadar-Setup` from it; a tap
+      on BOOT shows the network name and password instead, another tap the
+      code again. With a phone on the hotspot the screen says "Phone connected".
+- [ ] The hotspot page has the "Step 1 of 2" header, "Network" for SSID, and
+      no navigation bar. A wrong password → "Could not join / Check the
+      password" within ~20 s, then step 1 again; the radar still has no saved
+      network afterwards (power-cycle: step 1, not "Can't reach Wi-Fi").
+- [ ] The right password → "Step 2 of 2" with a QR code for
+      `http://<ip>/settings`. Saving a town ("Evanston IL") or a ZIP code
+      shows "Location saved / Showing planes near …" for 3 s, then the radar.
+      Power-cycle → the radar comes straight back (the Wi-Fi was kept in flash).
 - [ ] Portal reachable again at `http://plane-radar.local` once on the LAN, and
       its menu offers no **Update** (OTA) entry.
 - [ ] The navigation bar (Home / Wi-Fi / Settings / System) appears on all four
@@ -96,8 +138,10 @@ and walk this list:
 - [ ] Untick **Show aircraft direction lines** → lines disappear, triangles stay.
       Re-tick → they come back.
 - [ ] Range presets still cycle on a short BOOT tap, and the range label matches.
-- [ ] Hold BOOT 3 s → credentials, location, units, text size and overlay flags
-      all reset, device reboots into setup.
+- [ ] Hold BOOT 10 s (countdown after 2 s) → only the Wi-Fi is cleared; the
+      radar reboots into step 1 and, once rejoined, keeps its location.
+- [ ] Settings → **Reset for a new owner** → confirm page → location, display
+      settings and Wi-Fi erased, reboot into "Step 1 of 2".
 - [ ] Untick **Show flight trails** → tails disappear, symbols stay. Re-tick and
       wait two fetch intervals → tails grow again and follow the aircraft.
 - [ ] Untick **Separate symbols…** → every aircraft is the original triangle.
@@ -108,6 +152,10 @@ and walk this list:
 - [ ] Set it to 0 → no flash at all.
 - [ ] An airline flight shows its operator's name on the top tag line; a
       registration or hex id still shows verbatim.
+- [ ] On a radar with no logo pack the info card shows an airline flight's code on a
+      badge in its brand colour ("WN" on blue for Southwest, "DL" on red for
+      Delta), the code centred and readable; a light aircraft or helicopter
+      still gets its silhouette badge.
 - [ ] Serial log reports the CPU clock at boot (160 MHz) and a chip
       temperature once a minute.
 - [ ] The **Settings** page renders every group down to the **Save** button,
@@ -116,8 +164,12 @@ and walk this list:
 - [ ] Raise **Wi-Fi transmit power** to 19 → the log confirms it and the device
       stays connected. Drop it back to 8 if the board browns out or reboots.
 - [ ] Pull the plug on the router for ~10 s → the radar picture stays up and
-      recovers by itself. Only an outage past ~25 s brings up the connecting
-      animation.
+      recovers by itself. Only an outage past ~25 s brings up "Wi-Fi lost";
+      after 10 min the radar restarts and opens the hotspot between retries.
+- [ ] Flash a build with the two-slot layout over a radar that had the old one,
+      without erasing (`pio run -t upload`, or the web installer with *Erase*
+      unticked) → it boots, and Wi-Fi, location and settings are all still
+      there.
 - [ ] Leave it running ~15 minutes → aircraft keep updating, no reboot loop
       (watch the serial log at 115200 baud for stack traces).
 

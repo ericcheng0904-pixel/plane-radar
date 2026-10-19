@@ -17,6 +17,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # scripts/version.py runs `git describe`, which needs the tags and
+          # the history back to them.
+          fetch-depth: 0
 
       - name: Cache PlatformIO
         uses: actions/cache@v4
@@ -35,9 +39,11 @@ jobs:
           python-version: "3.11"
 
       - name: Install PlatformIO
-        run: pip install --upgrade platformio
+        # Pinned: the build has to come out the same next year.
+        run: pip install platformio==6.2.0
 
       - name: Build
+        # Fails if firmware.bin outgrows its app slot (scripts/size_guard.py).
         run: |
           set -o pipefail
           pio run -e supermini 2>&1 | tee build.log
@@ -54,6 +60,12 @@ jobs:
             exit 1
           fi
           echo "No compiler warnings in project code."
+
+      - name: Check the image could be published
+        # The artifact below is downloadable by anyone who can see this
+        # repository: refuse an image with the airline logos (trademarks), one
+        # that does not fit an update slot, or a private partition layout.
+        run: python3 scripts/make_release.py --check-only
 
       - name: Merge web-flash image
         run: pio run -t merge -e supermini

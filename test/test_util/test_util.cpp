@@ -7,9 +7,18 @@
  */
 #include <unity.h>
 
+#include <cstdint>
+#include <cstdio>
+
 #include "util/aircraft_class.h"
+#include "util/airport_guess.h"
 #include "util/callsign.h"
 #include "util/coords.h"
+#include "util/format.h"
+#include "util/feed_failover.h"
+#include "util/hold_detector.h"
+#include "util/health.h"
+#include "util/route_cache.h"
 #include "util/portal_input.h"
 
 void setUp() {}
@@ -172,9 +181,10 @@ void test_class_falls_back_to_type_code() {
   using util::aircraft::Klass;
   TEST_ASSERT_EQUAL(Klass::kRotor, util::aircraft::classify("EC35", ""));
   TEST_ASSERT_EQUAL(Klass::kRotor, util::aircraft::classify("R44", ""));
-  TEST_ASSERT_EQUAL(Klass::kHeavy, util::aircraft::classify("A388", ""));
-  TEST_ASSERT_EQUAL(Klass::kHeavy, util::aircraft::classify("B744", ""));
-  TEST_ASSERT_EQUAL(Klass::kJet, util::aircraft::classify("A320", ""));
+  TEST_ASSERT_EQUAL(Klass::kWide, util::aircraft::classify("A388", ""));
+  TEST_ASSERT_EQUAL(Klass::kWide, util::aircraft::classify("B744", ""));
+  TEST_ASSERT_EQUAL(Klass::kNarrow, util::aircraft::classify("A320", ""));
+  TEST_ASSERT_EQUAL(Klass::kJet, util::aircraft::classify("ZZZZ", "A3"));
   TEST_ASSERT_EQUAL(Klass::kJet, util::aircraft::classify("", ""));
   TEST_ASSERT_EQUAL(Klass::kJet, util::aircraft::classify(nullptr, nullptr));
 }
@@ -185,6 +195,29 @@ void test_class_does_not_confuse_bombers_with_bells() {
   TEST_ASSERT_EQUAL(Klass::kJet, util::aircraft::classify("B29", ""));
   TEST_ASSERT_EQUAL(Klass::kJet, util::aircraft::classify("B47", ""));
   TEST_ASSERT_EQUAL(Klass::kRotor, util::aircraft::classify("B47G", ""));
+}
+
+void test_shape_tells_types_apart() {
+  using util::aircraft::Klass;
+  using util::aircraft::shapeOf;
+  const auto crj = shapeOf("CRJ9", "A3");
+  TEST_ASSERT_EQUAL(Klass::kRegional, crj.klass);
+  TEST_ASSERT_TRUE(crj.rear_engines);
+  const auto e175 = shapeOf("E75L", "A3");
+  TEST_ASSERT_EQUAL(Klass::kRegional, e175.klass);
+  TEST_ASSERT_FALSE(e175.rear_engines);
+  TEST_ASSERT_EQUAL(Klass::kNarrow, shapeOf("B38M", "A3").klass);
+  const auto b789 = shapeOf("B789", "A5");
+  TEST_ASSERT_EQUAL(Klass::kWide, b789.klass);
+  TEST_ASSERT_EQUAL_UINT8(2, b789.engines);
+  TEST_ASSERT_EQUAL_UINT8(4, shapeOf("B748", "A5").engines);
+  TEST_ASSERT_EQUAL_UINT8(3, shapeOf("MD11", "A5").engines);
+  TEST_ASSERT_EQUAL(Klass::kTurboprop, shapeOf("DH8D", "A2").klass);
+  TEST_ASSERT_EQUAL(Klass::kBizJet, shapeOf("GLF6", "A2").klass);
+  TEST_ASSERT_EQUAL(Klass::kHeavy, shapeOf("ZZZZ", "A5").klass);  // unknown big one
+  TEST_ASSERT_EQUAL_UINT8(0, shapeOf("ZZZZ", "A5").engines);
+  TEST_ASSERT_EQUAL_STRING("WB", util::aircraft::shortLabel(Klass::kWide));
+  TEST_ASSERT_NULL(util::aircraft::shortLabel(Klass::kLight));
 }
 
 void test_alert_flags() {
@@ -207,6 +240,447 @@ void test_emergency_squawks() {
   TEST_ASSERT_FALSE(util::aircraft::isEmergencySquawk(nullptr));
 }
 
+// --- display formatting ------------------------------------------------------
+
+void test_thousands_groups_digits() {
+  char buf[16];
+  util::format::thousands(0, buf, sizeof(buf));
+  TEST_ASSERT_EQUAL_STRING("0", buf);
+  util::format::thousands(950, buf, sizeof(buf));
+  TEST_ASSERT_EQUAL_STRING("950", buf);
+  util::format::thousands(1000, buf, sizeof(buf));
+  TEST_ASSERT_EQUAL_STRING("1,000", buf);
+  util::format::thousands(12400, buf, sizeof(buf));
+  TEST_ASSERT_EQUAL_STRING("12,400", buf);
+  util::format::thousands(1234567, buf, sizeof(buf));
+  TEST_ASSERT_EQUAL_STRING("1,234,567", buf);
+  util::format::thousands(-1500, buf, sizeof(buf));
+  TEST_ASSERT_EQUAL_STRING("-1,500", buf);
+}
+
+void test_thousands_never_overruns() {
+  char buf[4];
+  util::format::thousands(12400, buf, sizeof(buf));
+  TEST_ASSERT_EQUAL_STRING("12,", buf);
+  util::format::thousands(5, buf, 0);  // must not write at all
+}
+
+void test_flight_number_uses_iata_code() {
+  char buf[12];
+  util::format::flightNumber("SWA1966", "WN", buf, sizeof(buf));
+  TEST_ASSERT_EQUAL_STRING("WN1966", buf);
+  util::format::flightNumber("UAL1531", "", buf, sizeof(buf));
+  TEST_ASSERT_EQUAL_STRING("UAL1531", buf);
+  util::format::flightNumber("N537JB", nullptr, buf, sizeof(buf));
+  TEST_ASSERT_EQUAL_STRING("N537JB", buf);
+  util::format::flightNumber("UAL", "UA", buf, sizeof(buf));
+  TEST_ASSERT_EQUAL_STRING("UAL", buf);
+  util::format::flightNumber(nullptr, "UA", buf, sizeof(buf));
+  TEST_ASSERT_EQUAL_STRING("", buf);
+}
+
+// --- BOOT long press -------------------------------------------------------------
+
+namespace {
+// Settings as the firmware uses them: 10 s hold, 400 ms max sampling gap,
+// nothing counts in the first 5 s after power-up.
+util::HoldDetector makeHold() { return util::HoldDetector(10000, 400, 5000); }
+
+/** Feed `down` every `step` ms from `from` to `to`; true if it fired. */
+bool feed(util::HoldDetector& h, bool down, unsigned long from, unsigned long to,
+          unsigned long step = 50) {
+  bool fired = false;
+  for (unsigned long t = from; t <= to; t += step) {
+    fired = h.update(down, t) || fired;
+  }
+  return fired;
+}
+}  // namespace
+
+void test_hold_fires_after_continuous_hold() {
+  auto h = makeHold();
+  TEST_ASSERT_FALSE(feed(h, false, 6000, 7000));
+  TEST_ASSERT_FALSE(feed(h, true, 7050, 16950));  // 9.9 s
+  TEST_ASSERT_TRUE(feed(h, true, 17000, 17100));  // reaches 10 s
+}
+
+void test_hold_fires_only_once_per_press() {
+  auto h = makeHold();
+  feed(h, false, 6000, 6100);
+  TEST_ASSERT_TRUE(feed(h, true, 6150, 16200));
+  TEST_ASSERT_FALSE(feed(h, true, 16250, 30000));
+}
+
+void test_release_restarts_the_hold() {
+  auto h = makeHold();
+  feed(h, false, 6000, 6100);
+  TEST_ASSERT_FALSE(feed(h, true, 6150, 12000));
+  TEST_ASSERT_FALSE(feed(h, false, 12050, 12100));
+  TEST_ASSERT_FALSE(feed(h, true, 12150, 21000));  // only 8.85 s since re-press
+}
+
+void test_unwatched_gap_restarts_the_hold() {
+  // The loop was busy for 3 s: nobody saw the button, so the hold starts over.
+  auto h = makeHold();
+  feed(h, false, 6000, 6100);
+  TEST_ASSERT_FALSE(feed(h, true, 6150, 9000));
+  TEST_ASSERT_FALSE(h.update(true, 12000));        // gap
+  TEST_ASSERT_FALSE(feed(h, true, 12050, 21950));  // 9.95 s since the gap
+  TEST_ASSERT_TRUE(feed(h, true, 22000, 22050));
+}
+
+void test_presses_during_power_up_do_not_count() {
+  // Held from power-on while being plugged in: counts from 5 s, not from 0.
+  auto h = makeHold();
+  TEST_ASSERT_FALSE(feed(h, true, 0, 14900));
+  TEST_ASSERT_TRUE(feed(h, true, 14950, 15100));
+}
+
+void test_held_ms_reports_the_watched_hold() {
+  auto h = makeHold();
+  feed(h, false, 6000, 6100);
+  TEST_ASSERT_EQUAL_UINT32(0, h.heldMs(6100));
+  feed(h, true, 6150, 8150);
+  TEST_ASSERT_EQUAL_UINT32(2000, h.heldMs(8150));
+  feed(h, false, 8200, 8200);
+  TEST_ASSERT_EQUAL_UINT32(0, h.heldMs(8200));
+}
+
+// --- self-repair -------------------------------------------------------------------
+
+namespace {
+using util::health::Reason;
+constexpr unsigned long kMin = 60000;
+
+/** A healthy radar ten minutes after boot, Wi-Fi up for nine. */
+util::health::State healthy() {
+  util::health::State s;
+  s.now_ms = 10 * kMin;
+  s.loop_heartbeat_ms = s.now_ms - 100;
+  s.wifi_up_since_ms = 1 * kMin;
+  s.last_attempt_ms = s.now_ms - 5000;
+  s.last_success_ms = s.now_ms - 5000;
+  s.largest_free_block = 20000;
+  return s;
+}
+}  // namespace
+
+void test_health_ok_when_all_is_well() {
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Reason::kNone),
+                          static_cast<uint8_t>(util::health::check(healthy())));
+}
+
+void test_health_restarts_a_stalled_loop() {
+  auto s = healthy();
+  s.loop_heartbeat_ms = s.now_ms - 61000;
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Reason::kLoopStalled),
+                          static_cast<uint8_t>(util::health::check(s)));
+}
+
+void test_health_restarts_when_fetching_stopped() {
+  // The bug that left an empty sky: Wi-Fi up, fetch task never started.
+  auto s = healthy();
+  s.last_attempt_ms = 0;
+  s.last_success_ms = 0;
+  s.wifi_up_since_ms = s.now_ms - 4 * kMin;
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Reason::kFetchStalled),
+                          static_cast<uint8_t>(util::health::check(s)));
+}
+
+void test_health_waits_for_wifi_to_settle() {
+  auto s = healthy();
+  s.last_attempt_ms = 0;
+  s.last_success_ms = 0;
+  s.wifi_up_since_ms = s.now_ms - 30000;  // just connected
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Reason::kNone),
+                          static_cast<uint8_t>(util::health::check(s)));
+  s.wifi_up_since_ms = 0;  // no Wi-Fi at all: nothing to blame the fetch for
+  s.now_ms = 100 * kMin;
+  s.loop_heartbeat_ms = s.now_ms;
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Reason::kNone),
+                          static_cast<uint8_t>(util::health::check(s)));
+}
+
+void test_health_restarts_after_long_no_data() {
+  auto s = healthy();
+  s.now_ms = 60 * kMin;
+  s.loop_heartbeat_ms = s.now_ms;
+  s.last_attempt_ms = s.now_ms - 10000;
+  s.last_success_ms = s.now_ms - 31 * kMin;
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Reason::kNoData),
+                          static_cast<uint8_t>(util::health::check(s)));
+  s.last_success_ms = s.now_ms - 29 * kMin;
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Reason::kNone),
+                          static_cast<uint8_t>(util::health::check(s)));
+}
+
+void test_health_no_data_counts_from_wifi_up_when_never_fetched() {
+  auto s = healthy();
+  s.now_ms = 60 * kMin;
+  s.loop_heartbeat_ms = s.now_ms;
+  s.last_attempt_ms = s.now_ms - 10000;  // trying, never succeeding
+  s.last_success_ms = 0;
+  s.wifi_up_since_ms = s.now_ms - 20 * kMin;
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Reason::kNone),
+                          static_cast<uint8_t>(util::health::check(s)));
+  s.wifi_up_since_ms = s.now_ms - 31 * kMin;
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Reason::kNoData),
+                          static_cast<uint8_t>(util::health::check(s)));
+}
+
+void test_health_restarts_on_lasting_low_memory() {
+  auto s = healthy();
+  s.largest_free_block = 4000;
+  s.low_memory_since_ms = s.now_ms - 30000;  // brief dip: tolerated
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Reason::kNone),
+                          static_cast<uint8_t>(util::health::check(s)));
+  s.low_memory_since_ms = s.now_ms - 61000;
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Reason::kLowMemory),
+                          static_cast<uint8_t>(util::health::check(s)));
+}
+
+void test_health_daily_restart() {
+  auto s = healthy();
+  s.now_ms = 24UL * 60 * kMin + 1;
+  s.loop_heartbeat_ms = s.now_ms;
+  s.last_attempt_ms = s.now_ms;
+  s.last_success_ms = s.now_ms;
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Reason::kDaily),
+                          static_cast<uint8_t>(util::health::check(s)));
+}
+
+// --- route cache --------------------------------------------------------------------
+
+namespace {
+util::Route makeRoute(const char* cs, const char* codes, bool known) {
+  util::Route r{};
+  snprintf(r.callsign, sizeof(r.callsign), "%s", cs);
+  snprintf(r.codes, sizeof(r.codes), "%s", codes);
+  r.known = known;
+  return r;
+}
+}  // namespace
+
+void test_route_cache_remembers_and_expires() {
+  util::RouteCache c;
+  util::Route out{};
+  TEST_ASSERT_TRUE(c.needsLookup("AAL3031", 1000));
+  c.put(makeRoute("AAL3031", "MCO-ORD", true), 1000);
+  TEST_ASSERT_FALSE(c.needsLookup("AAL3031", 2000));
+  TEST_ASSERT_TRUE(c.find("AAL3031", 2000, &out));
+  TEST_ASSERT_EQUAL_STRING("MCO-ORD", out.codes);
+  // Known routes last hours, then are asked about again.
+  TEST_ASSERT_TRUE(c.find("AAL3031", 1000 + util::RouteCache::kKnownTtlMs - 1, &out));
+  TEST_ASSERT_FALSE(c.find("AAL3031", 1000 + util::RouteCache::kKnownTtlMs + 1, &out));
+  TEST_ASSERT_TRUE(c.needsLookup("AAL3031", 1000 + util::RouteCache::kKnownTtlMs + 1));
+}
+
+void test_route_cache_unknown_is_retried_sooner() {
+  util::RouteCache c;
+  c.put(makeRoute("ZZZ9999", "unknown", false), 0 + 5);
+  TEST_ASSERT_FALSE(c.needsLookup("ZZZ9999", 10 * 60000UL));
+  TEST_ASSERT_TRUE(c.needsLookup("ZZZ9999", 31 * 60000UL));
+}
+
+void test_route_cache_replaces_and_recycles_oldest() {
+  util::RouteCache c;
+  util::Route out{};
+  c.put(makeRoute("UAL1", "ORD-SFO", true), 100);
+  c.put(makeRoute("UAL1", "ORD-DEN", true), 200);  // same flight: replaced, not duplicated
+  TEST_ASSERT_TRUE(c.find("UAL1", 300, &out));
+  TEST_ASSERT_EQUAL_STRING("ORD-DEN", out.codes);
+  char cs[9];
+  for (size_t i = 0; i < util::RouteCache::kCapacity; ++i) {  // fill past capacity
+    snprintf(cs, sizeof(cs), "SWA%u", static_cast<unsigned>(i));
+    c.put(makeRoute(cs, "MDW-LAS", true), 1000 + i);
+  }
+  TEST_ASSERT_FALSE(c.find("UAL1", 2000, &out));  // the oldest went first
+  TEST_ASSERT_TRUE(c.find("SWA63", 2000, &out));
+}
+
+// --- arriving / departing guess ----------------------------------------------------
+
+namespace {
+using util::airport_guess::Kind;
+// O'Hare and Midway, as on the radar.
+const util::airport_guess::Airport kChicago[] = {{41.9786f, -87.9048f}, {41.7860f, -87.7524f}};
+constexpr float kKmPerDegLon = 111.0f * 0.7437f;  // cos(42 deg)
+
+util::airport_guess::Plane at(float east_km, float north_km, int32_t alt, int16_t vrate,
+                              float track) {
+  // Position relative to O'Hare.
+  return {kChicago[0].lat + north_km / 111.0f, kChicago[0].lon + east_km / kKmPerDegLon,
+          alt, vrate, track, 180.0f};
+}
+
+uint8_t kindOf(const util::airport_guess::Guess& g) { return static_cast<uint8_t>(g.kind); }
+}  // namespace
+
+void test_guess_arrival_on_final() {
+  // 15 km west of O'Hare, 4,000 ft, descending, flying east toward it.
+  const auto g = util::airport_guess::guess(at(-15, 0, 4000, -800, 90), kChicago, 2);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Kind::kArriving), kindOf(g));
+  TEST_ASSERT_EQUAL_UINT32(0, g.airport);
+}
+
+void test_guess_departure_climbing_away() {
+  // 10 km north of O'Hare, 5,000 ft, climbing, flying north.
+  const auto g = util::airport_guess::guess(at(0, 10, 5000, 2000, 0), kChicago, 2);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Kind::kDeparting), kindOf(g));
+  TEST_ASSERT_EQUAL_UINT32(0, g.airport);
+}
+
+void test_guess_none_when_level_high_far_or_unaligned() {
+  TEST_ASSERT_EQUAL_UINT8(0, kindOf(util::airport_guess::guess(at(-15, 0, 4000, 0, 90), kChicago, 2)));
+  TEST_ASSERT_EQUAL_UINT8(0, kindOf(util::airport_guess::guess(at(-15, 0, 25000, -1500, 90), kChicago, 2)));
+  TEST_ASSERT_EQUAL_UINT8(0, kindOf(util::airport_guess::guess(at(-60, 0, 6000, -800, 90), kChicago, 2)));
+  TEST_ASSERT_EQUAL_UINT8(0, kindOf(util::airport_guess::guess(at(-15, 0, 4000, -800, 0), kChicago, 2)));
+  // Too high for how close it is: not on any approach.
+  TEST_ASSERT_EQUAL_UINT8(0, kindOf(util::airport_guess::guess(at(-5, 0, 9000, -800, 90), kChicago, 2)));
+  // Unknown altitude.
+  TEST_ASSERT_EQUAL_UINT8(0, kindOf(util::airport_guess::guess(at(-15, 0, INT32_MIN, -800, 90), kChicago, 2)));
+}
+
+void test_guess_none_when_two_airports_fit() {
+  // 12 km north of one airport and 23 km north of another straight behind it,
+  // flying south and descending: both are plausible destinations.
+  const util::airport_guess::Airport in_line[] = {{41.9786f, -87.9048f}, {41.88f, -87.9048f}};
+  const auto g = util::airport_guess::guess(at(0, 12, 4000, -900, 180), in_line, 2);
+  TEST_ASSERT_EQUAL_UINT8(0, kindOf(g));
+}
+
+void test_route_leg_picks_the_current_leg() {
+  char buf[16];
+  TEST_ASSERT_TRUE(util::format::routeLeg("SNA-ORD-IAD", "ORD", true, buf, sizeof(buf)));
+  TEST_ASSERT_EQUAL_STRING("SNA-ORD", buf);
+  TEST_ASSERT_TRUE(util::format::routeLeg("SNA-ORD-IAD", "ORD", false, buf, sizeof(buf)));
+  TEST_ASSERT_EQUAL_STRING("ORD-IAD", buf);
+  TEST_ASSERT_TRUE(util::format::routeLeg("ORD-CHS-ORD", "ORD", true, buf, sizeof(buf)));
+  TEST_ASSERT_EQUAL_STRING("CHS-ORD", buf);
+  TEST_ASSERT_TRUE(util::format::routeLeg("ORD-CHS-ORD", "ORD", false, buf, sizeof(buf)));
+  TEST_ASSERT_EQUAL_STRING("ORD-CHS", buf);
+  TEST_ASSERT_TRUE(util::format::routeLeg("MCO-ORD", "ORD", true, buf, sizeof(buf)));
+  TEST_ASSERT_EQUAL_STRING("MCO-ORD", buf);
+}
+
+void test_route_leg_rejects_impossible_legs() {
+  char buf[16] = "untouched";
+  TEST_ASSERT_FALSE(util::format::routeLeg("MCO-ORD", "ORD", false, buf, sizeof(buf)));
+  TEST_ASSERT_FALSE(util::format::routeLeg("MCO-ORD", "MCO", true, buf, sizeof(buf)));
+  TEST_ASSERT_FALSE(util::format::routeLeg("MCO-ORD", "MDW", true, buf, sizeof(buf)));
+  TEST_ASSERT_FALSE(util::format::routeLeg("unknown", "ORD", true, buf, sizeof(buf)));
+  TEST_ASSERT_EQUAL_STRING("untouched", buf);
+}
+
+// --- feed failover -------------------------------------------------------------------
+
+namespace {
+// As the firmware uses it: adsb.fi then adsb.lol, two failures to fail over,
+// back to the first after 5 min.
+constexpr unsigned long kRetry = 5UL * 60UL * 1000UL;
+util::FeedFailover makeFailover() { return util::FeedFailover(2, 2, kRetry); }
+}  // namespace
+
+void test_failover_after_two_failures() {
+  auto f = makeFailover();
+  TEST_ASSERT_TRUE(f.select(0));
+  f.failure(10000);
+  TEST_ASSERT_EQUAL_UINT32(0, f.current());  // one blip is not enough
+  f.failure(20000);
+  TEST_ASSERT_EQUAL_UINT32(1, f.current());
+  f.success(30000);
+  TEST_ASSERT_EQUAL_UINT32(1, f.current());
+}
+
+void test_failover_success_resets_the_count() {
+  auto f = makeFailover();
+  f.failure(10000);
+  f.success(20000);
+  f.failure(30000);
+  TEST_ASSERT_EQUAL_UINT32(0, f.current());
+}
+
+void test_failover_returns_to_first_and_leaves_after_one_failure() {
+  auto f = makeFailover();
+  f.failure(10000);
+  f.failure(20000);  // on the reserve from 20 s
+  f.success(20000 + kRetry - 1);
+  TEST_ASSERT_EQUAL_UINT32(1, f.current());
+  f.success(20000 + kRetry);  // time to see whether the first is back
+  TEST_ASSERT_EQUAL_UINT32(0, f.current());
+  f.failure(20000 + kRetry + 10000);  // it is not: straight back
+  TEST_ASSERT_EQUAL_UINT32(1, f.current());
+  f.success(20000 + kRetry + 20000);  // and the 5 min start over
+  TEST_ASSERT_EQUAL_UINT32(1, f.current());
+}
+
+void test_failover_stays_on_first_once_it_answers() {
+  auto f = makeFailover();
+  f.failure(10000);
+  f.failure(20000);
+  f.success(20000 + kRetry);
+  TEST_ASSERT_EQUAL_UINT32(0, f.current());
+  f.success(30000 + kRetry);  // the first is back
+  f.failure(40000 + kRetry);  // one blip on it no longer sends us away
+  TEST_ASSERT_EQUAL_UINT32(0, f.current());
+}
+
+void test_failover_rests_a_rate_limited_feed() {
+  auto f = makeFailover();
+  f.failure(10000);
+  f.failure(20000);                // on the reserve
+  f.failure(30000, 3600000);       // 429: rest it an hour, move on at once
+  TEST_ASSERT_EQUAL_UINT32(0, f.current());
+  TEST_ASSERT_TRUE(f.resting(1, 30000));
+  f.failure(40000);
+  f.failure(50000);                // the first is down too: nowhere to go
+  TEST_ASSERT_EQUAL_UINT32(0, f.current());
+  TEST_ASSERT_TRUE(f.select(60000));
+  TEST_ASSERT_EQUAL_UINT32(0, f.current());
+  f.failure(30000 + 3600000);
+  f.failure(30000 + 3600000 + 10000);  // rest over: the reserve is tried again
+  TEST_ASSERT_EQUAL_UINT32(1, f.current());
+}
+
+void test_failover_select_skips_resting_feeds() {
+  auto f = makeFailover();
+  f.failure(10000, 900000);  // the first rate-limits
+  TEST_ASSERT_EQUAL_UINT32(1, f.current());
+  f.failure(20000, 900000);  // and then the reserve
+  TEST_ASSERT_FALSE(f.select(30000));  // both resting: skip this poll
+  TEST_ASSERT_TRUE(f.select(10000 + 900000));  // the first's rest is over
+  TEST_ASSERT_EQUAL_UINT32(0, f.current());
+}
+
+void test_failover_does_not_return_to_a_resting_first() {
+  auto f = makeFailover();
+  f.failure(10000, 3600000);  // 429 from the first
+  f.success(10000 + kRetry);  // retry time, but it asked for an hour
+  TEST_ASSERT_EQUAL_UINT32(1, f.current());
+  f.success(10000 + 3600000);
+  TEST_ASSERT_EQUAL_UINT32(0, f.current());
+}
+
+void test_failover_all_failing_after_each_feed_had_its_turn() {
+  auto f = makeFailover();
+  for (int i = 0; i < 3; ++i) {
+    f.failure(10000UL * (i + 1));
+  }
+  TEST_ASSERT_FALSE(f.allFailing());
+  f.failure(40000);
+  TEST_ASSERT_TRUE(f.allFailing());
+  f.success(50000);
+  TEST_ASSERT_FALSE(f.allFailing());
+}
+
+void test_failover_rest_survives_millis_wrap() {
+  auto f = makeFailover();
+  const unsigned long start = 0xFFFFFFFFUL - 60000UL;  // a minute before wrap
+  f.failure(start, 900000);
+  TEST_ASSERT_TRUE(f.resting(0, start + 600000UL));   // 10 min on, past the wrap
+  TEST_ASSERT_FALSE(f.resting(0, start + 900000UL));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_checkbox_accepts_ticked_spellings);
@@ -226,7 +700,43 @@ int main(int, char**) {
   RUN_TEST(test_class_prefers_emitter_category);
   RUN_TEST(test_class_falls_back_to_type_code);
   RUN_TEST(test_class_does_not_confuse_bombers_with_bells);
+  RUN_TEST(test_shape_tells_types_apart);
   RUN_TEST(test_alert_flags);
   RUN_TEST(test_emergency_squawks);
+  RUN_TEST(test_thousands_groups_digits);
+  RUN_TEST(test_thousands_never_overruns);
+  RUN_TEST(test_flight_number_uses_iata_code);
+  RUN_TEST(test_route_leg_picks_the_current_leg);
+  RUN_TEST(test_route_leg_rejects_impossible_legs);
+  RUN_TEST(test_hold_fires_after_continuous_hold);
+  RUN_TEST(test_hold_fires_only_once_per_press);
+  RUN_TEST(test_release_restarts_the_hold);
+  RUN_TEST(test_unwatched_gap_restarts_the_hold);
+  RUN_TEST(test_presses_during_power_up_do_not_count);
+  RUN_TEST(test_held_ms_reports_the_watched_hold);
+  RUN_TEST(test_health_ok_when_all_is_well);
+  RUN_TEST(test_health_restarts_a_stalled_loop);
+  RUN_TEST(test_health_restarts_when_fetching_stopped);
+  RUN_TEST(test_health_waits_for_wifi_to_settle);
+  RUN_TEST(test_health_restarts_after_long_no_data);
+  RUN_TEST(test_health_no_data_counts_from_wifi_up_when_never_fetched);
+  RUN_TEST(test_health_restarts_on_lasting_low_memory);
+  RUN_TEST(test_health_daily_restart);
+  RUN_TEST(test_route_cache_remembers_and_expires);
+  RUN_TEST(test_route_cache_unknown_is_retried_sooner);
+  RUN_TEST(test_route_cache_replaces_and_recycles_oldest);
+  RUN_TEST(test_guess_arrival_on_final);
+  RUN_TEST(test_guess_departure_climbing_away);
+  RUN_TEST(test_guess_none_when_level_high_far_or_unaligned);
+  RUN_TEST(test_guess_none_when_two_airports_fit);
+  RUN_TEST(test_failover_after_two_failures);
+  RUN_TEST(test_failover_success_resets_the_count);
+  RUN_TEST(test_failover_returns_to_first_and_leaves_after_one_failure);
+  RUN_TEST(test_failover_stays_on_first_once_it_answers);
+  RUN_TEST(test_failover_rests_a_rate_limited_feed);
+  RUN_TEST(test_failover_select_skips_resting_feeds);
+  RUN_TEST(test_failover_does_not_return_to_a_resting_first);
+  RUN_TEST(test_failover_all_failing_after_each_feed_had_its_turn);
+  RUN_TEST(test_failover_rest_survives_millis_wrap);
   return UNITY_END();
 }

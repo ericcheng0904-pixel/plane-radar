@@ -49,6 +49,9 @@ float fetchRadiusKm();
  */
 constexpr uint8_t kFontStepCount = 3;
 
+/** Display themes, as stored (see ui/theme.h). */
+constexpr uint8_t kThemeCount = 4;
+
 /**
  * Wi-Fi transmit power steps the portal accepts, in dBm.
  *
@@ -70,6 +73,10 @@ bool useMiles();
 bool showRunways();
 /** Track/speed vector lines drawn ahead of each aircraft symbol. */
 bool showTrackVectors();
+
+/** Dim the screen between dusk and dawn at the radar's location. */
+bool dimAtNight();
+void saveDimAtNightFromPortal(const char* checkbox_value);
 /** Thin grey tail behind each aircraft. */
 bool showTrails();
 /** Per-class silhouettes (helicopter, heavy) instead of one triangle. */
@@ -77,6 +84,8 @@ bool showClassIcons();
 /** Flash duration in seconds; 0 = alerts off. */
 uint8_t alertSeconds();
 uint8_t fontStep();
+/** ui::theme::Id as stored; 0 (Scope) by default. */
+uint8_t theme();
 /** Wi-Fi transmit power in dBm, one of kTxPowerChoices. */
 uint8_t txPowerDbm();
 /** WiFi portal checkbox: "T" = miles, otherwise km. */
@@ -89,11 +98,13 @@ void saveClassIconsFromPortal(const char* checkbox_value);
 void saveAlertSecondsFromPortal(const char* value);
 /** WiFi portal number field: 1..kFontStepCount, stored 0-based. */
 void saveFontStepFromPortal(const char* value);
+/** WiFi portal select: 0..kThemeCount-1; anything else keeps the stored theme. */
+void saveThemeFromPortal(const char* value);
 /** WiFi portal number field: one of kTxPowerChoices. */
 void saveTxPowerFromPortal(const char* value);
 void formatRing3Label(char* buf, size_t len, float ring3_km, bool use_miles);
 void formatCurrentRing3Label(char* buf, size_t len);
-/** Reset display options to their defaults (e.g. with WiFi credential wipe). */
+/** Reset the range and every display option to its default (reset for a new owner). */
 void unitsReset();
 
 }  // namespace ui::radar

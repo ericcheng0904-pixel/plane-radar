@@ -5,6 +5,8 @@
 #include <Arduino.h>
 #include <WiFi.h>
 
+#include <algorithm>
+
 #if __has_include(<driver/temp_sensor.h>)
 #include <driver/temp_sensor.h>
 #define PLANE_RADAR_HAS_TEMP_SENSOR 1
@@ -13,9 +15,14 @@
 #include "config.h"
 #include "hardware/display.h"
 #include "services/adsb_client.h"
+#include "services/device_health.h"
+#include "services/geocode.h"
+#include "services/ota.h"
+#include "services/routes.h"
 #include "services/radar_location.h"
 #include "services/wifi_setup.h"
 #include "ui/alert.h"
+#include "ui/info_card.h"
 #include "ui/radar_display.h"
 #include "ui/radar_range.h"
 #include "ui/status_screens.h"
@@ -26,8 +33,42 @@ namespace {
 bool g_radar_visible = false;
 unsigned long g_wifi_down_since = 0;
 unsigned long g_last_reconnect_ms = 0;
-unsigned long g_last_adsb_fetch_ms = 0;
+unsigned long g_last_redraw_ms = 0;
+/** lastUpdateMs() of the sweep trails/alerts last saw; 0 = none yet. */
+unsigned long g_last_sweep_ms = 0;
 unsigned long g_last_temp_log_ms = 0;
+/** The background fetch task; nullptr until it has started. */
+TaskHandle_t g_adsb_task = nullptr;
+unsigned long g_last_task_try_ms = 0;
+/** The info screen (hold the button 2-9 s) is up until then; 0 = not shown. */
+unsigned long g_info_until_ms = 0;
+constexpr unsigned long kInfoShowMs = 20000;
+
+/** Put up the info screen: where the settings are, the version, the data. */
+void showInfoScreen() {
+  char version[40];
+  snprintf(version, sizeof(version), "Plane Radar %s", config::kFirmwareVersion);
+  char status[48];
+  const unsigned long last = services::adsb::lastUpdateMs();
+  if (last == 0) {
+    snprintf(status, sizeof(status), "no flight data yet");
+  } else {
+    snprintf(status, sizeof(status), "%s, data %lu s ago", services::adsb::dataFeedName(),
+             (millis() - last) / 1000);
+  }
+  statusScreenInfo(WiFi.localIP().toString().c_str(), version, status);
+  g_info_until_ms = millis() + kInfoShowMs;
+  g_radar_visible = false;
+}
+
+/** A setup screen shown in place of the radar while Wi-Fi is up. */
+enum class SetupScreen : uint8_t { kNone, kLocationStep, kLocationSaved };
+SetupScreen g_setup_screen = SetupScreen::kNone;
+/** The address setup step 2 shows; drawn again if DHCP hands out another. */
+uint32_t g_setup_screen_ip = 0;
+/** "Location saved" stays up until then. */
+unsigned long g_location_saved_until_ms = 0;
+constexpr unsigned long kLocationSavedScreenMs = 3000;
 
 /** Pin the core clock to its maximum; see config::kCpuFreqFullMhz. */
 void applyCpuClock() {
@@ -45,7 +86,18 @@ void logChipTemperature() {
 #ifdef PLANE_RADAR_HAS_TEMP_SENSOR
   float celsius = 0.0f;
   if (temp_sensor_read_celsius(&celsius) == ESP_OK) {
-    Serial.printf("Chip temperature: %.1f C\n", celsius);
+    const unsigned long last = services::adsb::lastUpdateMs();
+    Serial.printf("Chip temperature: %.1f C, heap free %u (largest %u, min %u), "
+                  "fetch task %s (stack left %u), last data %s%lu s%s\n",
+                  celsius, static_cast<unsigned>(ESP.getFreeHeap()),
+                  static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)),
+                  static_cast<unsigned>(ESP.getMinFreeHeap()),
+                  g_adsb_task != nullptr ? "running" : "NOT RUNNING",
+                  g_adsb_task != nullptr
+                      ? static_cast<unsigned>(uxTaskGetStackHighWaterMark(g_adsb_task))
+                      : 0u,
+                  last == 0 ? "never (up " : "",
+                  (millis() - last) / 1000, last == 0 ? ")" : " ago");
   }
 #endif
 }
@@ -59,12 +111,15 @@ void initTemperatureSensor() {
 }
 
 void showRadarIfConnected() {
-  if (WiFi.status() != WL_CONNECTED) {
+  // Without a location the radar would show the default's sky; setup step 2
+  // asks for one instead (showSetupScreens).
+  if (WiFi.status() != WL_CONNECTED || !services::location::isSet()) {
     g_radar_visible = false;
     return;
   }
   ui::radarDisplayDraw();
   g_radar_visible = true;
+  services::ota::noteRadarDrawn();
 }
 
 void onRangeTap() {
@@ -87,8 +142,10 @@ void applyDisplaySettingsIfChanged() {
   ui::radarDisplayInvalidateStyle();
   // The radar centre may have moved with the same save, which would leave every
   // stored trail pointing at the wrong place.
+  services::adsb::discardSweepsBefore(millis());
   ui::trails::clear();
   ui::alert::reset();
+  ui::card::reset();
   if (g_radar_visible && WiFi.status() == WL_CONNECTED) {
     ui::radarDisplayDraw();
   }
@@ -96,32 +153,139 @@ void applyDisplaySettingsIfChanged() {
 
 void handleBootButton() {
   bootButtonPollLongPress();
-  if (bootButtonConsumeTap()) {
+  const bool tap = bootButtonConsumeTap();
+  if (g_info_until_ms != 0) {
+    // On the info screen a tap closes it (and changes nothing else).
+    if (tap || static_cast<long>(millis() - g_info_until_ms) >= 0) {
+      g_info_until_ms = 0;
+    }
+    return;
+  }
+  if (bootButtonConsumeInfo() && WiFi.status() == WL_CONNECTED && g_radar_visible) {
+    showInfoScreen();
+    return;
+  }
+  // A tap changes the range only where the range can be seen: on a setup or
+  // "Wi-Fi lost" screen it would change it unseen, behind the message.
+  if (tap && g_radar_visible) {
     onRangeTap();
   }
 }
 
-/** Keeps the portal and the BOOT button alive during the alert animation. */
-void pollDuringAlert() {
-  wifiLoop();
-  bootButtonPollLongPress();
+/**
+ * Setup step 2 and the confirmation after it, in place of the radar while
+ * Wi-Fi is up: with no location saved the screen asks for one (a QR code for
+ * the settings page), and any save says for a few seconds where the radar now
+ * looks. True while one of them owns the screen.
+ */
+bool showSetupScreens() {
+  services::geocode::applyResult();  // a town lookup that has just finished
+  if (services::location::consumeChanged()) {
+    // Nothing drawn or remembered for the old centre may survive the move.
+    services::adsb::discardSweepsBefore(millis());
+    ui::trails::clear();
+    ui::alert::reset();
+    ui::card::reset();
+    statusScreenLocationSaved(services::location::label());
+    g_location_saved_until_ms = millis() + kLocationSavedScreenMs;
+    g_setup_screen = SetupScreen::kLocationSaved;
+    g_radar_visible = false;
+    services::geocode::poke();  // the first sweep for the new place, now
+    return true;
+  }
+  if (g_setup_screen == SetupScreen::kLocationSaved) {
+    if (static_cast<long>(millis() - g_location_saved_until_ms) < 0) {
+      statusScreenHoldOverlay(bootButtonHeldMs());
+      return true;
+    }
+    g_setup_screen = SetupScreen::kNone;
+  }
+  if (services::location::isSet()) {
+    g_setup_screen = SetupScreen::kNone;
+    return false;
+  }
+  const uint32_t ip = static_cast<uint32_t>(WiFi.localIP());
+  if (g_setup_screen != SetupScreen::kLocationStep || ip != g_setup_screen_ip) {
+    ui::radarDisplayReserve();
+    statusScreenLocationStep(WiFi.localIP().toString().c_str());
+    g_setup_screen = SetupScreen::kLocationStep;
+    g_setup_screen_ip = ip;
+    g_radar_visible = false;
+  }
+  statusScreenHoldOverlay(bootButtonHeldMs());
+  return true;
 }
 
-void fetchAndDrawAircraft() {
-  const float fetch_km = ui::radar::fetchRadiusKm();
-  if (!services::adsb::fetchUpdate(services::location::lat(),
-                                   services::location::lon(), fetch_km)) {
-    handleBootButton();
+/**
+ * Feed each new sweep from the fetch task to trails and alerts, once. Runs on
+ * the main loop so trails/alert state is only ever touched by one thread; the
+ * fetch task just publishes, and lastUpdateMs() tells us a new sweep landed.
+ */
+void consumeNewSweep() {
+  const unsigned long sweep_ms = services::adsb::lastUpdateMs();
+  if (sweep_ms == 0 || sweep_ms == g_last_sweep_ms) {
     return;
   }
+  static services::adsb::Aircraft planes[services::adsb::kMaxAircraft];
+  const size_t n = services::adsb::snapshotAircraft(
+      planes, services::adsb::kMaxAircraft, &g_last_sweep_ms);
   const unsigned long now = millis();
-  ui::trails::update(services::adsb::aircraftList(),
-                     services::adsb::aircraftCount(), now);
-  ui::alert::scan(services::adsb::aircraftList(),
-                  services::adsb::aircraftCount(), now);
+  ui::trails::update(planes, n, now);
+  ui::alert::scan(planes, n, now);
   ui::radarDisplayRefreshAircraft();
-  ui::radarDisplayPlayAlert(pollDuringAlert);
-  handleBootButton();
+  g_last_redraw_ms = millis();  // that was this pass's redraw
+  ui::radarDisplayStartAlert();
+}
+
+// ADS-B fetch runs on its own task: the HTTP request blocks for up to a few
+// seconds, and keeping it off the main loop lets the radar keep redrawing
+// (dead-reckoned) at 4 Hz throughout. The task publishes into the shared
+// aircraft buffer under a lock; the render loop reads a snapshot.
+void adsbFetchTask(void*) {
+  unsigned long interval_ms = config::kAdsbFetchIntervalMs;
+  for (;;) {
+    services::health::checkFromFetchTask();
+    // A town lookup from the settings page takes a pass of its own: one
+    // connection at a time, never alongside an aircraft fetch.
+    // An update check takes a pass of its own too (and restarts the radar
+    // when it installs one).
+    const bool looked_up = services::ota::runIfDue() || services::geocode::runPending();
+    // No location yet (setup step 2): there is no sky to fetch.
+    if (!looked_up && WiFi.status() == WL_CONNECTED && services::location::isSet()) {
+      const unsigned long started = millis();  // before the centre is read
+      const bool ok = services::adsb::fetchUpdate(services::location::lat(),
+                                                  services::location::lon(),
+                                                  ui::radar::fetchRadiusKm(), started);
+      if (ok) {
+        interval_ms = services::adsb::wantedIntervalMs();
+        services::routes::refresh();  // origin/destination for new flights
+      } else if (services::adsb::allFeedsFailing()) {
+        // Every feed has failed in turn (outage, rate limits): back off.
+        interval_ms = std::min(interval_ms * 2, config::kAdsbMaxBackoffMs);
+        Serial.printf("adsb: all feeds failing, next try in %lu s\n", interval_ms / 1000);
+      }
+    }
+    // Woken early by a lookup request or a newly saved location.
+    services::geocode::idle(interval_ms);
+  }
+}
+
+/** Start the fetch task if it is not running; logs and reports failure. */
+bool startAdsbTask() {
+  if (g_adsb_task != nullptr) {
+    return true;
+  }
+  g_last_task_try_ms = millis();
+  // The C3 has a single core: the task time-slices with loop() at the same
+  // priority. It checks Wi-Fi each cycle.
+  if (xTaskCreatePinnedToCore(adsbFetchTask, "adsb", config::kAdsbTaskStackBytes,
+                              nullptr, 1, &g_adsb_task, 0) != pdPASS) {
+    g_adsb_task = nullptr;
+    Serial.printf("adsb: fetch task did NOT start (largest free block %u) - retrying\n",
+                  static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+    return false;
+  }
+  return true;
 }
 
 }  // namespace
@@ -132,16 +296,30 @@ void setup() {
   Serial.println();
   Serial.println("Plane Radar");
 
+  services::health::begin();
+  services::ota::begin();
   bootButtonInit();
   services::location::init();
   ui::radar::rangeInit();
   applyCpuClock();
   initTemperatureSensor();
+
+  // No setPollFn(wifiLoop): the fetch runs on its own task, and calling the
+  // portal's WebServer from there would race the main loop's wifiLoop().
+  services::adsb::init();
+  services::routes::init();
+  services::geocode::init();
+  // Start the fetch task now, while the heap is still in one piece: it waits
+  // for Wi-Fi on its own. Started after Wi-Fi setup, as before, it failed
+  // whenever setup went through the hotspot portal — the portal left no free
+  // block as big as the stack, xTaskCreate failed unchecked, and the radar
+  // showed an empty sky until the next power cycle.
+  startAdsbTask();
+
   displayInit();
   if (wifiShowsSetupScreenOnBoot()) {
     statusScreenPortal();
   }
-  services::adsb::setPollFn(wifiLoop);
 
   if (wifiSetupConnect()) {
     showRadarIfConnected();
@@ -149,6 +327,11 @@ void setup() {
 }
 
 void loop() {
+  services::health::checkFromLoop();
+  services::ota::checkTrial();
+  if (g_adsb_task == nullptr && millis() - g_last_task_try_ms >= 5000) {
+    startAdsbTask();
+  }
   handleBootButton();
   wifiLoop();
   applyDisplaySettingsIfChanged();
@@ -164,15 +347,19 @@ void loop() {
     // radar picture up while that plays out; only an outage that outlasts
     // kWifiConnectingScreenDelayMs is worth taking the screen away for.
     const bool show_ui = down_ms >= config::kWifiConnectingScreenDelayMs;
-    if (show_ui && g_radar_visible) {
+    if (show_ui && (g_radar_visible || g_setup_screen != SetupScreen::kNone)) {
       g_radar_visible = false;
+      g_setup_screen = SetupScreen::kNone;  // drawn again once Wi-Fi is back
+      wifiShowLostScreen();
     }
 
     if (down_ms >= config::kWifiDownGraceMs &&
         millis() - g_last_reconnect_ms >= config::kWifiReconnectIntervalMs) {
       g_last_reconnect_ms = millis();
-      if (wifiReconnect(show_ui)) {
+      if (wifiReconnect(g_wifi_down_since)) {
         g_wifi_down_since = 0;
+        // The attempt may have put up "Wi-Fi lost" over whatever was there.
+        g_setup_screen = SetupScreen::kNone;
         showRadarIfConnected();
       }
     }
@@ -181,11 +368,20 @@ void loop() {
       Serial.printf("WiFi back after %lu ms\n", millis() - g_wifi_down_since);
       g_wifi_down_since = 0;
     }
-    if (!g_radar_visible) {
+    if (showSetupScreens()) {
+      // Setup step 2, or "Location saved": the radar waits.
+    } else if (g_info_until_ms != 0) {
+      // The info screen is up; handleBootButton() takes it down.
+    } else if (!g_radar_visible) {
       showRadarIfConnected();
-    } else if (millis() - g_last_adsb_fetch_ms >= config::kAdsbFetchIntervalMs) {
-      g_last_adsb_fetch_ms = millis();
-      fetchAndDrawAircraft();
+    } else {
+      consumeNewSweep();
+      if (millis() - g_last_redraw_ms >= ui::radarDisplayRedrawIntervalMs()) {
+        // Redraw at 4 Hz with dead-reckoned positions; the ADS-B fetch runs on
+        // its own task (adsbFetchTask).
+        g_last_redraw_ms = millis();
+        ui::radarDisplayRefreshAircraft();
+      }
     }
   }
 
