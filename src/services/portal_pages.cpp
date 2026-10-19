@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #if __has_include(<esp_random.h>)
@@ -751,10 +752,16 @@ void putLe32(uint8_t* p, uint32_t v) {
 }
 
 /** Where /screen.bmp is in its stream, between bands of the frame. */
+/** Rows converted per network write: one 720-byte write per row ran at ~45 KB/s. */
+constexpr int kRowsPerWrite = 4;
+constexpr size_t kScreenOutBytes = kRowsPerWrite * 240 * 3;
+
 struct ScreenStream {
   WebServer* server;
   unsigned long started_ms;
   bool aborted;
+  /** kScreenOutBytes, borrowed for the request rather than held for good. */
+  uint8_t* out;
 };
 
 /**
@@ -766,8 +773,7 @@ struct ScreenStream {
 void sendScreenRows(const uint8_t* px, int /*y0*/, int rows, int w, void* ctx) {
   auto* st = static_cast<ScreenStream*>(ctx);
   constexpr unsigned long kBudgetMs = 8000;
-  constexpr int kRowsPerWrite = 4;
-  static uint8_t out[kRowsPerWrite * 240 * 3];
+  uint8_t* const out = st->out;
   if (w > 240) {
     st->aborted = true;
   }
@@ -794,7 +800,7 @@ void sendScreenRows(const uint8_t* px, int /*y0*/, int rows, int w, void* ctx) {
       row[3 * x + 2] = static_cast<uint8_t>((r5 << 3) | (r5 >> 2));
     }
     filled += row_bytes;
-    if (filled + row_bytes > sizeof(out) || y == rows - 1) {
+    if (filled + row_bytes > kScreenOutBytes || y == rows - 1) {
       st->server->sendContent(reinterpret_cast<const char*>(out), filled);
       filled = 0;
     }
@@ -827,7 +833,12 @@ void handleScreen(WebServer& server) {
   putLe16(header + 28, 24u);
   putLe32(header + 34, image_bytes);
 
-  ScreenStream st{&server, millis(), false};
+  auto* out = static_cast<uint8_t*>(malloc(kScreenOutBytes));
+  if (out == nullptr) {
+    server.send(503, "text/plain", "busy: try again in a moment");
+    return;
+  }
+  ScreenStream st{&server, millis(), false, out};
   // Headers go out only once a frame is sure to follow.
   struct Gate {
     ScreenStream* st;
@@ -844,7 +855,9 @@ void handleScreen(WebServer& server) {
     }
     sendScreenRows(px, y0, rows, w, g->st);
   };
-  if (!ui::radarDisplayCapture(sink, &gate)) {
+  const bool drawn = ui::radarDisplayCapture(sink, &gate);
+  free(out);
+  if (!drawn) {
     server.send(503, "text/plain", "no frame yet");
     return;
   }

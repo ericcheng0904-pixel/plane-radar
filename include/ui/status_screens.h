@@ -40,6 +40,9 @@ void statusScreenWifiLostTick();
 void statusScreenConnectFailed();
 void statusScreenWifiReset();
 
+/** An update is downloading; the radar restarts by itself when done. */
+void statusScreenUpdating();
+
 /**
  * The info screen (hold the button 2-9 s): a QR code and the address of the
  * settings page, the firmware version and how the data is doing. For help

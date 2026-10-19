@@ -1330,6 +1330,11 @@ void radarDisplayStartAlert() {
   s_alert.total_ms = static_cast<unsigned long>(seconds) * 1000UL;
 }
 
+void radarDisplayReleaseBuffer() {
+  s_strip.deleteSprite();
+  s_frame_ready = false;
+}
+
 void radarDisplayInvalidateStyle() {
   s_night_checked_ms = 0;  // the night setting may have changed with the rest
   s_label_metrics_ready = false;

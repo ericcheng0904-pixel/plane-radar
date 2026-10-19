@@ -16,6 +16,9 @@ unsigned long radarDisplayRedrawIntervalMs();
 /** Drop cached label fonts after a portal setting changed. Redraw follows. */
 void radarDisplayInvalidateStyle();
 
+/** Free the frame buffer for good (an update needs the memory; it restarts after). */
+void radarDisplayReleaseBuffer();
+
 /**
  * Start the armed alert flash, if any, and clear it. The pulse is drawn into
  * the following frames for the duration set in the portal; nothing blocks.

@@ -16,8 +16,8 @@
  *
  * Images are kSize x kSize panel-native RGB565 (R/B pre-swapped) in LovyanGFX's
  * default big-endian layout, so pushImage(x, y, kSize, kSize, logo,
- * kTransparent) draws them as is. The pointer stays valid until the next call
- * for another airline. Main loop only.
+ * kTransparent) draws them as is. They are read straight from flash (mapped),
+ * so the pointer stays valid. Main loop only.
  */
 namespace data::airline_logos {
 

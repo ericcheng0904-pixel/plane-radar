@@ -42,6 +42,8 @@ TaskHandle_t g_adsb_task = nullptr;
 unsigned long g_last_task_try_ms = 0;
 /** The info screen (hold the button 2-9 s) is up until then; 0 = not shown. */
 unsigned long g_info_until_ms = 0;
+/** The updater has the frame buffer; nothing is drawn until it restarts the radar. */
+bool g_updating = false;
 constexpr unsigned long kInfoShowMs = 20000;
 
 /** Put up the info screen: where the settings are, the version, the data. */
@@ -329,6 +331,18 @@ void setup() {
 void loop() {
   services::health::checkFromLoop();
   services::ota::checkTrial();
+  if (services::ota::wantsDisplay()) {
+    if (!g_updating) {
+      g_updating = true;
+      g_radar_visible = false;
+      ui::radarDisplayReleaseBuffer();
+      statusScreenUpdating();
+      services::ota::displayReleased();
+    }
+    wifiLoop();  // keep the settings page answering
+    delay(10);
+    return;
+  }
   if (g_adsb_task == nullptr && millis() - g_last_task_try_ms >= 5000) {
     startAdsbTask();
   }

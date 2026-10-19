@@ -451,6 +451,13 @@ void drawInfo() {
   line(s_info_status, 206, kTiny, kSetupMuted);
 }
 
+void drawUpdating() {
+  clearSetup();
+  line("Updating", 98, kTitle, kSetupText);
+  line("Please leave it plugged in", 130, kSmall, kSetupMuted);
+  line("Back in about a minute", 150, kTiny, kSetupMuted);
+}
+
 void drawLocationSaved() {
   clearSetup();
   line("Location saved", 88, kTitle, kSetupGood);
@@ -543,6 +550,8 @@ void statusScreenInfo(const char* ip, const char* version_line, const char* stat
   snprintf(s_info_status, sizeof(s_info_status), "%s", status_line != nullptr ? status_line : "");
   show(drawInfo);
 }
+
+void statusScreenUpdating() { show(drawUpdating); }
 
 void statusScreenLocationSaved(const char* place) {
   snprintf(s_arg_text, sizeof(s_arg_text), "%s", place != nullptr ? place : "");

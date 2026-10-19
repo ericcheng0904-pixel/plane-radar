@@ -31,6 +31,14 @@ void noteRadarDrawn();
 /** Main loop, every pass: confirm a trial run, or roll it back after 10 min. */
 void checkTrial();
 
+/**
+ * Main loop: true while an update wants the screen's memory. The loop then
+ * frees the frame buffer, shows "Updating", calls displayReleased() and
+ * draws nothing more: the radar restarts after the update, whatever happens.
+ */
+bool wantsDisplay();
+void displayReleased();
+
 /** Settings page "Check now": look on the next fetch-task cycle. */
 void requestCheck();
 

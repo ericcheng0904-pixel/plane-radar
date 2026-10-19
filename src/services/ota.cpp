@@ -73,6 +73,9 @@ constexpr unsigned long kStallMs = 15000;
 constexpr unsigned long kDownloadMs = 150000;
 
 volatile bool s_trial = false;
+/** Download handshake with the main loop (wantsDisplay / displayReleased). */
+volatile bool s_want_display = false;
+volatile bool s_display_free = false;
 unsigned long s_wifi_up_ms = 0;
 esp_timer_handle_t s_trial_timer = nullptr;
 volatile bool s_drawn = false;
@@ -213,12 +216,56 @@ uint8_t failures(Preferences& p, const char* ver_key, const char* sha_key, const
              : 0;
 }
 
-/** Download, verify and install. Restarts on success; false (with a status) otherwise. */
+/**
+ * Ask the main loop for the frame buffer's 57 KB: a TLS session, Update's
+ * buffer and the radar's own needs do not fit together otherwise. False if
+ * the loop did not hand it over in time.
+ */
+bool takeDisplay() {
+  s_want_display = true;
+  const unsigned long start = millis();
+  while (!s_display_free) {
+    if (millis() - start > 3000) {
+      s_want_display = false;
+      return false;
+    }
+    delay(20);
+  }
+  return true;
+}
+
+/**
+ * The screen is gone for this boot once the download has started: restart,
+ * and skip updates on the next boot so a link that keeps failing cannot turn
+ * into a restart every few minutes.
+ */
+[[noreturn]] void failAndRestart(const char* why) {
+  setStatus(why);
+  Preferences p;
+  p.begin("ota", false);
+  p.putBool("skip_boot", true);
+  p.end();
+  delay(300);
+  ESP.restart();
+  for (;;) {
+  }
+}
+
+/** Download, verify and install. Restarts either way once it has the screen. */
 bool install(const Manifest& m) {
   const esp_partition_t* running = esp_ota_get_running_partition();
   const esp_partition_t* next = esp_ota_get_next_update_partition(nullptr);
   if (next == nullptr || next == running || next->size < m.size) {
     setStatus("no room for an update on this radar");
+    return false;
+  }
+  if (!takeDisplay()) {
+    delay(200);
+    if (s_display_free) {
+      // Handed over just as we gave up: the screen is gone all the same.
+      failAndRestart("update postponed: display busy");
+    }
+    setStatus("update postponed: display busy");
     return false;
   }
   WiFiClientSecure client;
@@ -227,8 +274,7 @@ bool install(const Manifest& m) {
   char url[112];
   snprintf(url, sizeof(url), "%sfirmware-%s.bin", kSite, m.version);
   if (!http.begin(client, url)) {
-    setStatus("update download failed");
-    return false;
+    failAndRestart("update download failed");
   }
   http.setReuse(false);
   http.setUserAgent(config::kUserAgent);
@@ -238,13 +284,11 @@ bool install(const Manifest& m) {
   services::tls::noteResult(client, services::tls::Host::kPages, code);
   if (code != HTTP_CODE_OK || http.getSize() != static_cast<int>(m.size)) {
     http.end();
-    setStatus("update download failed");
-    return false;
+    failAndRestart("update download failed");
   }
   if (!Update.begin(m.size, U_FLASH)) {
     http.end();
-    setStatus("update could not start");
-    return false;
+    failAndRestart("update could not start");
   }
 
   // The image must carry its own version in its User-Agent: a signed image
@@ -258,7 +302,13 @@ bool install(const Manifest& m) {
   mbedtls_sha256_context sha;
   mbedtls_sha256_init(&sha);
   mbedtls_sha256_starts_ret(&sha, 0);
-  static uint8_t buf[2048];  // fetch task only
+  constexpr size_t kBufBytes = 4096;  // from the heap the frame buffer gave back
+  auto* buf = static_cast<uint8_t*>(malloc(kBufBytes));
+  if (buf == nullptr) {
+    http.end();
+    Update.abort();
+    failAndRestart("update could not start");
+  }
   WiFiClient* stream = http.getStreamPtr();
   size_t got = 0;
   const unsigned long started = millis();
@@ -278,7 +328,7 @@ bool install(const Manifest& m) {
       delay(5);
       continue;
     }
-    const size_t want = std::min({static_cast<size_t>(avail), sizeof(buf),
+    const size_t want = std::min({static_cast<size_t>(avail), kBufBytes,
                                    static_cast<size_t>(m.size) - got});
     // read(buf, n), not readBytes(): that goes a byte at a time through TLS.
     const int got_now = stream->read(buf, want);
@@ -303,6 +353,7 @@ bool install(const Manifest& m) {
     last_data = millis();
   }
   http.end();  // give the TLS session's memory back before verifying
+  free(buf);
   uint8_t digest[32];
   mbedtls_sha256_finish_ret(&sha, digest);
   mbedtls_sha256_free(&sha);
@@ -333,8 +384,7 @@ bool install(const Manifest& m) {
     if (bad_image) {
       countFailure("vfail_ver", "vfail_sha", "vfails", m);
     }
-    setStatus(why);
-    return false;
+    failAndRestart(why);
   }
   // Recorded before the boot slot changes: a power cut right after it must
   // still leave the next boot able to tell how this install went.
@@ -345,8 +395,7 @@ bool install(const Manifest& m) {
     p.remove("try_ver");
     p.remove("try_sha");
     p.end();
-    setStatus("update could not be finished");
-    return false;
+    failAndRestart("update could not be finished");
   }
   char text[64];
   snprintf(text, sizeof(text), "installed %s - restarting", m.version);
@@ -431,6 +480,11 @@ void begin() {
     // A confirmed image (or one flashed over USB): settle the last install.
     Preferences p;
     p.begin("ota", false);
+    if (p.getBool("skip_boot", false)) {
+      p.remove("skip_boot");
+      s_hold_this_boot = true;
+      setStatus("the last update attempt failed - trying again tomorrow");
+    }
     const String tried = p.getString("try_ver", "");
     if (tried.length() > 0) {
       const String sha = p.getString("try_sha", "");
@@ -522,6 +576,10 @@ void checkTrial() {
 }
 
 void requestCheck() { s_check_now = true; }
+
+bool wantsDisplay() { return s_want_display; }
+
+void displayReleased() { s_display_free = true; }
 
 void statusText(char* out, size_t n) {
   if (n == 0) {
