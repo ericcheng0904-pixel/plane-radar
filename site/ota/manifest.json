@@ -1,8 +1,8 @@
 {
-  "version": "v2.0.7",
-  "size": 1579248,
-  "sha256": "1af38253f4d6a809cbfe9bdc99173566e750e00a1d9190555a0308f3c15657c3",
-  "sig": "MEUCIQCT37yBt7i4a2XpZL5nCoO8dJM5MUR5GiDT48ZlewXiYAIgU8GjA2YRQsobBaInzaWe9AXRI72ZAna0dM41gBL/mnk=",
+  "version": "v2.0.8",
+  "size": 1579312,
+  "sha256": "ec8dd4b5fc77c17c2644468102ba7bff5428a939d3eb56630cb38820181e7e39",
+  "sig": "MEQCIA7AdoRkgA4VlUL85CwgOANNq8gwWfslDpKZUD3NcxfqAiBQciQpmkrMKB4zBtRDKezJcfSseomUtEvC/Xa8Q/yHmw==",
   "min_free_heap_hint": 57344,
-  "notes": "Test release"
+  "notes": "Manual update check waits for the page"
 }
