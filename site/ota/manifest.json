@@ -1,8 +1,8 @@
 {
-  "version": "v2.0.8",
+  "version": "v2.0.9",
   "size": 1579312,
-  "sha256": "ec8dd4b5fc77c17c2644468102ba7bff5428a939d3eb56630cb38820181e7e39",
-  "sig": "MEQCIA7AdoRkgA4VlUL85CwgOANNq8gwWfslDpKZUD3NcxfqAiBQciQpmkrMKB4zBtRDKezJcfSseomUtEvC/Xa8Q/yHmw==",
+  "sha256": "f9a0dbd025b2b5fadeb24678ac50456bd160ab34cf78cdd83bfc9d776531aee6",
+  "sig": "MEUCIHl0XN9I0U3Kx4gXq35aOyBMNn10cm0QahRmirkVYboNAiEA3mJy0biW3NK54JOFBA4qBBMu1pwjhl71vXnxT/S48kw=",
   "min_free_heap_hint": 57344,
-  "notes": "Manual update check waits for the page"
+  "notes": "Fix: updates no longer roll back by mistake"
 }
