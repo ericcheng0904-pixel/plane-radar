@@ -143,7 +143,7 @@ void sendPageStart(WebServer& server, const char* title, const char* nav, int re
   server.sendHeader("Content-Security-Policy", "frame-ancestors 'none'");
   server.setContentLength(CONTENT_LENGTH_UNKNOWN);
   server.send(200, "text/html", "");
-  char refresh[48] = "";
+  char refresh[64] = "";
   if (refresh_s > 0) {
     snprintf(refresh, sizeof(refresh), "<meta http-equiv='refresh' content='%d'>", refresh_s);
   }

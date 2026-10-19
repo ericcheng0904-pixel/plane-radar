@@ -476,7 +476,11 @@ class VerifySiteTest(ToolTest):
         self.assertEqual(make_release.verify_site(self.site), [])
 
     def test_committed_site_verifies(self):
-        self.assertEqual(make_release.verify_site(REPO / "site") if (REPO / "site").is_dir() else [], [])
+        # Against the repository's own key, not the throwaway one setUp installs.
+        with mock.patch.object(ota_common, "PUBLIC_KEY_HEADER",
+                               REPO / "include" / "ota_public_key.h"):
+            problems = make_release.verify_site(REPO / "site") if (REPO / "site").is_dir() else []
+        self.assertEqual(problems, [])
 
     def test_tampered_site_is_caught(self):
         point = self.keygen()

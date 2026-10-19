@@ -325,7 +325,7 @@ class PollingSocketSource {
   HTTPClient* http_;
   WiFiClient* stream_;
   unsigned long deadline_;
-  char buffer_[512];
+  char buffer_[512] = {};
   size_t pos_ = 0;
   size_t len_ = 0;
   size_t total_ = 0;

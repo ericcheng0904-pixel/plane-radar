@@ -62,7 +62,15 @@ unsigned long lastUpdateMs() { return 3700000UL; }
 const char* feedName() { return "adsb.fi"; }
 const char* dataFeedName() { return "adsb.fi"; }
 bool dataVerified() { return true; }
+void feedStatusText(char* out, size_t n) {
+  snprintf(out, n, "adsb.lol: 12 of 400 requests today");
+}
 }  // namespace services::adsb
+
+namespace services::ota {
+void requestCheck() {}
+void statusText(char* out, size_t n) { snprintf(out, n, "up to date (checked 2 h ago)"); }
+}  // namespace services::ota
 
 namespace services::health {
 const char* lastRestartText() { return "power on"; }
@@ -77,6 +85,8 @@ bool useMiles() { return false; }
 bool showRunways() { return true; }
 bool showTrackVectors() { return false; }
 bool showTrails() { return true; }
+bool dimAtNight() { return true; }
+void saveDimAtNightFromPortal(const char*) {}
 bool showClassIcons() { return true; }
 uint8_t alertSeconds() { return 5; }
 uint8_t fontStep() { return 1; }
