@@ -3,6 +3,10 @@
 Releases are installed over the air by radars running an earlier release
 (docs/OTA.md). Newest first.
 
+## v2.0.7
+
+- Release used to test the trial boot of v2.0.6's code (no change).
+
 ## v2.0.6
 
 - After Wi-Fi is set up from a phone, the radar shows "Connected" and
