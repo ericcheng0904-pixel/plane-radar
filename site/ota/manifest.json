@@ -1,8 +1,8 @@
 {
-  "version": "v2.0.3",
+  "version": "v2.0.4",
   "size": 1578672,
-  "sha256": "500c5e88307b7e8033209b1d46d003904cb333f4cfcf556ac94d48257d88d126",
-  "sig": "MEQCIHKio+p7UJR25GT62AqDLKFFJ6TDF95qazJZJ7iPBr3XAiBpA2odFzUMAYvIxQH78eHYjMVsCf1o8oD1jqOrd6OfEw==",
+  "sha256": "4f8eddbf22b1d31b678fef64553241b8288ad74379a4e853e02311fe6538cb15",
+  "sig": "MEYCIQC0yjmR8gN50qhmQ/bZV1y1l19OMxKWkLqlPHhwKJmnTAIhAML0nJf0aUz4ewYX///qT1Vd1LfTvesDmNIZa8STofBV",
   "min_free_heap_hint": 57344,
-  "notes": "First update over the air"
+  "notes": "Update memory check after the frame buffer is handed back"
 }
