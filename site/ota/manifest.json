@@ -1,8 +1,8 @@
 {
-  "version": "v2.0.0",
-  "size": 1577920,
-  "sha256": "cfa5f50fa058ca636b5398563fd4f18851652e6e46f68c1f9bd651d36836661e",
-  "sig": "MEYCIQDp7nXDm8yl1BFslICan2zCBk5OyAIH28LEoHM1WoYzNAIhAMV/FisiR/hOZ+lyS1tanOwaaQP55r5kaavHS4Tp9ksb",
+  "version": "v2.0.1",
+  "size": 1577936,
+  "sha256": "7b062722da2a8936add222b1c214afc1d56dd311ad5a916f8594f71441ce3a06",
+  "sig": "MEYCIQC3OdjvXBHErD97xdBxmYoORfgfkDymTXs71+YKkyBaCAIhAIsUIsS2gmCCV2fDDFM9WTEp0dupJ2y0OruO3+z1it/d",
   "min_free_heap_hint": 57344,
-  "notes": "First release of Plane Radar 2"
+  "notes": "Small fixes; first over-the-air update"
 }
