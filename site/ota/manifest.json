@@ -1,8 +1,8 @@
 {
-  "version": "v2.0.5",
-  "size": 1578672,
-  "sha256": "adb09ab2596f98bfd2d70984491a20d93810354f816af00cebfe3687b2b4292c",
-  "sig": "MEUCIGNj38mlIsUh7qRoc4OsruKVJu6uyROWf7zO+o3xPgA7AiEA1iFCeNvI6G/4et/tqklN9YfE5HboGGnc0wAFJeJDGdc=",
+  "version": "v2.0.6",
+  "size": 1579248,
+  "sha256": "0816742537164c95dd335338aed66936e737368faa93a4cda1f6041221e97abc",
+  "sig": "MEQCIHLOJzhqavbltu9r8/LrM/rDt3BLMNKb7+cxTXOg6LaXAiBSENeql+boN1A2cCAd5ijIkb6mWe/BnnFUv6Odfw5pfQ==",
   "min_free_heap_hint": 57344,
-  "notes": "Second test of updates over the air"
+  "notes": "Restart after phone setup; folded location form"
 }
