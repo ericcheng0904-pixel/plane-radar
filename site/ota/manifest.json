@@ -1,0 +1,8 @@
+{
+  "version": "v2.0.0",
+  "size": 1577920,
+  "sha256": "cfa5f50fa058ca636b5398563fd4f18851652e6e46f68c1f9bd651d36836661e",
+  "sig": "MEYCIQDp7nXDm8yl1BFslICan2zCBk5OyAIH28LEoHM1WoYzNAIhAMV/FisiR/hOZ+lyS1tanOwaaQP55r5kaavHS4Tp9ksb",
+  "min_free_heap_hint": 57344,
+  "notes": "First release of Plane Radar 2"
+}
