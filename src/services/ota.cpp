@@ -268,6 +268,11 @@ bool install(const Manifest& m) {
     setStatus("update postponed: display busy");
     return false;
   }
+  // Judged now, with the frame buffer handed back and the main loop quiet:
+  // before, a settings page being served could make room look short.
+  if (ESP.getFreeHeap() < m.heap_hint || !services::tls::enoughMemory()) {
+    failAndRestart("update postponed: not enough memory");
+  }
   WiFiClientSecure client;
   services::tls::configure(client, services::tls::Host::kPages, kReadTimeoutMs);
   HTTPClient http;
@@ -435,11 +440,6 @@ void check() {
   }
   if (s_hold_this_boot) {
     snprintf(text, sizeof(text), "%s available - trying again tomorrow", m.version);
-    setStatus(text);
-    return;
-  }
-  if (ESP.getFreeHeap() < m.heap_hint || !services::tls::enoughMemory()) {
-    snprintf(text, sizeof(text), "%s available - waiting for memory", m.version);
     setStatus(text);
     return;
   }

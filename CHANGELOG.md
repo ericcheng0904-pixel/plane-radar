@@ -3,10 +3,14 @@
 Releases are installed over the air by radars running an earlier release
 (docs/OTA.md). Newest first.
 
+## v2.0.4
+
+- The update's memory check runs after the frame buffer is handed back: a
+  settings page being served at the moment of the check made v2.0.3 wait.
+
 ## v2.0.3
 
-- First update delivered over the air from GitHub Pages (no functional
-  change).
+- Release used to test updates from GitHub Pages (no functional change).
 
 ## v2.0.2
 
