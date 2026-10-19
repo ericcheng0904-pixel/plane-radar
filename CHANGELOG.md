@@ -3,6 +3,14 @@
 Releases are installed over the air by radars running an earlier release
 (docs/OTA.md). Newest first.
 
+## v2.0.6
+
+- After Wi-Fi is set up from a phone, the radar shows "Connected" and
+  restarts once: straight on from the setup hotspot, every flight fetch
+  failed until the next restart, so a new owner saw an empty sky.
+- When a location is already set, the settings page shows where the radar
+  is and folds the location form away under "Change the location".
+
 ## v2.0.5
 
 - Release used to test updates from GitHub Pages (no functional change).

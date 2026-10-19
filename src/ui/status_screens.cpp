@@ -451,6 +451,13 @@ void drawInfo() {
   line(s_info_status, 206, kTiny, kSetupMuted);
 }
 
+void drawJoined() {
+  clearSetup();
+  line("Connected", 88, kTitle, kSetupGood);
+  line(s_arg_text, 122, kBody, kSetupText);
+  line("Starting the radar...", 150, kSmall, kSetupMuted);
+}
+
 void drawUpdating() {
   clearSetup();
   line("Updating", 98, kTitle, kSetupText);
@@ -552,6 +559,11 @@ void statusScreenInfo(const char* ip, const char* version_line, const char* stat
 }
 
 void statusScreenUpdating() { show(drawUpdating); }
+
+void statusScreenJoined(const char* ssid) {
+  snprintf(s_arg_text, sizeof(s_arg_text), "%s", ssid != nullptr ? ssid : "");
+  show(drawJoined);
+}
 
 void statusScreenLocationSaved(const char* place) {
   snprintf(s_arg_text, sizeof(s_arg_text), "%s", place != nullptr ? place : "");

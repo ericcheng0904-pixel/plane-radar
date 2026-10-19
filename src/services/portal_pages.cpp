@@ -238,7 +238,8 @@ void sendLocationNotice(WebServer& server, const String& code) {
       case geocode::State::kNotFound:
         snprintf(buf, sizeof(buf),
                  "<div class='er'>Could not find &ldquo;%s&rdquo;. Add the state "
-                 "(Evanston IL) or the country, or paste coordinates.</div>",
+                 "(Evanston IL; for a neighbourhood the state, not the city: "
+                 "Logan Square IL) or the country, or paste coordinates.</div>",
                  asked);
         break;
       case geocode::State::kFailed:
@@ -291,9 +292,11 @@ void sendLocationSection(WebServer& server) {
   if (set) {
     char place[location::kMaxLabel * 6 + 1];
     util::setup::htmlEscape(location::label(), place, sizeof(place));
+    // Set already: say where, and keep the form folded away, so the page
+    // does not read as a request to type coordinates.
     snprintf(buf, sizeof(buf),
-             "<div class='hn'>Showing planes near <b>%s</b>. To move the radar, "
-             "use any one of these.</div>",
+             "<div class='hn'>Showing planes near <b>%s</b>.</div>"
+             "<details><summary>Change the location</summary>",
              place);
     server.sendContent(buf);
   }
@@ -341,6 +344,9 @@ void sendLocationSection(WebServer& server) {
       "</details><button type='submit'>Save location</button></form>"
       "<div class='hn'>The lake and shoreline layer covers the Chicago area only; "
       "elsewhere the radar simply shows no water.</div>");
+  if (set) {
+    server.sendContent("</details>");
+  }
 }
 
 void sendDisplaySections(WebServer& server) {

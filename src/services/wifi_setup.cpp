@@ -754,6 +754,14 @@ bool openConfigPortal(const char* retry_ssid = nullptr, bool password_suspect = 
   }
   if (joined) {
     s_wm.stopConfigPortal();  // the hotspot goes; the new link stays
+    // Then start the radar from a clean boot, on the network just saved.
+    // Straight on from the hotspot, every flight fetch failed until the next
+    // restart (the hotspot's servers and Wi-Fi state left behind), and the
+    // first thing a new owner saw was an empty sky.
+    statusScreenJoined(WiFi.SSID().c_str());
+    Serial.println("Joined from the setup hotspot - restarting into the radar");
+    delay(1500);
+    esp_restart();
   }
   // Taps here switched views; left latched, the radar would read the last
   // one as a range change once it appears.

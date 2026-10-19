@@ -40,6 +40,9 @@ void statusScreenWifiLostTick();
 void statusScreenConnectFailed();
 void statusScreenWifiReset();
 
+/** Joined the home Wi-Fi from the setup hotspot; restarting into the radar. */
+void statusScreenJoined(const char* ssid);
+
 /** An update is downloading; the radar restarts by itself when done. */
 void statusScreenUpdating();
 
