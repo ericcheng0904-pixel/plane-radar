@@ -1,60 +1,268 @@
-# Release check: a v* tag builds the tagged commit and runs every check
-# scripts/make_release.py would, without signing or publishing anything.
+# Release: pushing a vMAJOR.MINOR.PATCH tag builds that commit, signs the image
+# with the OTA_SIGNING_KEY repository secret, commits the signed site/ to main
+# and deploys it to GitHub Pages. No human step (docs/RELEASING.md).
 #
-# This workflow used to attach a firmware image to a GitHub Release. It no
-# longer publishes at all: releases are signed on the maintainer's computer,
-# because the signing key must never reach CI, and are served from GitHub Pages
-# (docs/RELEASING.md). Its permissions are read-only, so it cannot publish an
-# image -- with the airline logos or without -- even by mistake.
-name: Release check
+#   git tag -a v2.1.0 -m "Larger labels" && git push public main v2.1.0
+#
+# The first line of the tag's message becomes the update notes shown on the
+# radar's settings page.
+#
+# Re-run: Actions -> Release -> Run workflow, with the tag. A tag that main
+# already publishes is refused (a published version is never re-signed); to
+# redeploy what is on main, run the Pages workflow instead.
+#
+# Pages needs one setting that only the repository owner can change: the
+# github-pages environment must allow deployments from the tag pattern v*
+# (Settings -> Environments -> github-pages -> Deployment branches and tags).
+# Left on "main" only, the Deploy job is refused for a tag. The release commit
+# is already on main by then; fix the setting and re-run the failed job, or
+# run the Pages workflow.
+name: Release
 
 on:
   push:
     tags:
-      - "v*"
+      # A glob, not a regex: "v2.1.0-rc1" matches it too. The first step
+      # refuses anything but vMAJOR.MINOR.PATCH.
+      - "v[0-9]*.[0-9]*.[0-9]*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build and publish, e.g. v2.1.0"
+        required: true
+        type: string
 
 permissions:
-  contents: read
+  contents: write
+  pages: write
+  id-token: write
+
+# One release at a time, and never cancel one half way: it may be between
+# pushing to main and deploying.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  # Only ever expanded by the shell as "$TAG" (never pasted into a script), and
+  # checked against the release grammar before anything uses it.
+  TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  PYTHONDONTWRITEBYTECODE: "1"
 
 jobs:
-  check:
+  release:
+    name: Build, sign and commit
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # This job holds the signing key. It needs to push to main and nothing else.
+    permissions:
+      contents: write
     steps:
-      - name: Checkout
+      - name: Check the tag name and that the signing key is set
+        # Before anything is built: a wrong tag or a missing secret should cost
+        # seconds, not a firmware build. The key is only tested, never printed.
+        env:
+          KEY: ${{ secrets.OTA_SIGNING_KEY }}
+        run: |
+          release_re='^v(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})$'
+          if [[ ! "$TAG" =~ $release_re ]]; then
+            printf '::error title=Not a release tag::Releases are vMAJOR.MINOR.PATCH (v2.1.0); got a different tag name.\n'
+            exit 1
+          fi
+          if [ -z "$KEY" ]; then
+            echo "::error title=OTA_SIGNING_KEY is not set::Add the signing key as the repository Actions secret OTA_SIGNING_KEY (Settings -> Secrets and variables -> Actions; the PEM of an unencrypted ECDSA P-256 key, see docs/RELEASING.md), then re-run this workflow with the tag."
+            exit 1
+          fi
+          case "$KEY" in
+            *ENCRYPTED*)
+              echo "::error title=OTA_SIGNING_KEY is encrypted::The workflow cannot type a passphrase. Store an unencrypted PEM in the secret."
+              exit 1 ;;
+            *"-----BEGIN "*"PRIVATE KEY-----"*) ;;
+            *)
+              echo "::error title=OTA_SIGNING_KEY is not a PEM private key::The secret must hold the whole PEM file, from the BEGIN line to the END line."
+              exit 1 ;;
+          esac
+
+      - name: Checkout the tag
         uses: actions/checkout@v4
         with:
-          # git describe has to find the tag to stamp the version.
+          ref: refs/tags/${{ env.TAG }}
+          # scripts/version.py runs `git describe`, which needs the tags and
+          # the history back to them.
           fetch-depth: 0
 
-      - name: Cache PlatformIO
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/pip
-            ~/.platformio/.cache
-            .pio/libdeps
-          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
-          restore-keys: |
-            ${{ runner.os }}-pio-
+      - name: Check the tag against main
+        # The tag must be a commit on main (that is where the release is
+        # committed), and its version must be newer than what main publishes:
+        # radars never go down, and a published version is never re-signed.
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor "refs/tags/$TAG^{commit}" origin/main; then
+            echo "::error title=Tag is not on main::$TAG points at a commit that is not in main's history. Release from main."
+            exit 1
+          fi
+          published="$(git show origin/main:site/ota/manifest.json 2>/dev/null |
+            python3 -c 'import json,sys; print(json.load(sys.stdin).get("version", ""))' 2>/dev/null || true)"
+          python3 - "$TAG" "$published" <<'PY'
+          import sys
+          sys.path.insert(0, "scripts")
+          import ota_common
+
+          tag, published = sys.argv[1], sys.argv[2]
+          new = ota_common.parse_release(tag)
+          old = ota_common.parse_release(published) if published else None
+          if new is None:
+              print("::error title=Not a release tag::%s is not a release version" % tag)
+              sys.exit(1)
+          if old is not None and new <= old:
+              print("::error title=Already published::main publishes %s, which is not older than %s. "
+                    "Radars only install a newer version and a published one is never re-signed: "
+                    "release a higher version, or run the Pages workflow to redeploy main." % (published, tag))
+              sys.exit(1)
+          print("Releasing %s over %s." % (tag, published or "nothing"))
+          PY
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install PlatformIO
-        run: pip install platformio==6.2.0
+      - name: Install PlatformIO and the release tools' dependencies
+        # Pinned, like build.yml: the same tools build the same image next year.
+        # No dependency cache: a signed release is built from what is pinned.
+        run: |
+          pip install platformio==6.2.0
+          if [ -f scripts/requirements-release.txt ]; then
+            pip install -r scripts/requirements-release.txt
+          else
+            pip install cryptography
+          fi
+
+      - name: Host unit tests
+        run: pio test -e native
 
       - name: Build
+        # Fails if firmware.bin outgrows its app slot (scripts/size_guard.py).
         run: pio run -e supermini
 
-      - name: Check the build is releasable as this tag
-        # Version is the tag and the image was built as it, no logos, fits the
-        # slot, release partition layout, real public key embedded.
+      - name: Check the image was built as this tag
+        # The image must carry "PlaneRadar/<tag> (+...)" -- not "-dirty", not
+        # "-3-g...", no logos, fits the slot, release layout, real public key.
+        # make_release.py checks it again when it signs; failing here keeps the
+        # key out of the job until the build is known to be good.
+        run: python3 scripts/make_release.py --check-only --version "$TAG"
+
+      - name: Update notes from the tag
+        id: notes
+        # First line of the annotated tag's message; "Release <tag>" for a
+        # lightweight tag or an empty message. One line, plain text, at most
+        # 200 characters, which is what make_release.py accepts.
         run: |
-          if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
-            python3 scripts/make_release.py --check-only
-          else
-            python3 scripts/make_release.py --check-only --version "${GITHUB_REF_NAME}"
+          python3 - >> "$GITHUB_OUTPUT" <<'PY'
+          import os
+          import subprocess
+
+          tag = os.environ["TAG"]
+          ref = "refs/tags/" + tag
+          kind = subprocess.run(["git", "cat-file", "-t", ref], capture_output=True, text=True).stdout.strip()
+          message = ""
+          if kind == "tag":
+              message = subprocess.run(["git", "for-each-ref", "--format=%(contents)", ref],
+                                       capture_output=True, text=True, check=True).stdout
+          first = next((line for line in message.splitlines() if line.strip()), "")
+          notes = " ".join("".join(c if c >= " " and c != "\x7f" else " " for c in first).split())[:200].rstrip()
+          print("notes=" + (notes or "Release " + tag))
+          PY
+
+      - name: Write the signing key
+        env:
+          KEY: ${{ secrets.OTA_SIGNING_KEY }}
+        run: |
+          umask 077
+          printf '%s' "$KEY" > "$RUNNER_TEMP/ota-key.pem"
+
+      - name: Sign and lay out site/
+        env:
+          NOTES: ${{ steps.notes.outputs.notes }}
+        run: |
+          # --notes=... keeps a message that starts with "-" from being read as an option.
+          python3 scripts/make_release.py --version "$TAG" \
+              --key "$RUNNER_TEMP/ota-key.pem" --notes="$NOTES"
+
+      - name: Delete the signing key
+        # Whatever happened above. Nothing after this step needs the key.
+        if: always()
+        run: rm -f "$RUNNER_TEMP/ota-key.pem"
+
+      - name: Verify the release as a radar would
+        # Manifest, size, SHA-256 and signature against the committed public
+        # key; no logos; the installer's four parts and offsets.
+        run: python3 scripts/make_release.py --verify-site site
+
+      - name: Put site/ on main
+        # The release is committed to main, not onto the tag: the signed files
+        # are laid over main's tree. Only what make_release.py owns is replaced
+        # (ota/, flash/ and manifest.json), so a change to the installer page
+        # made on main since the tag survives.
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+
+          stage="$RUNNER_TEMP/site-signed"
+          rm -rf "$stage"
+          cp -a site "$stage"
+
+          git fetch origin main
+          # Drop make_release.py's edits from the tag's tree, then move to main
+          # itself (a branch, so that the commit can be pushed).
+          git checkout -f -B main origin/main
+          git clean -fdq -- site
+
+          rm -rf site/ota site/flash site/manifest.json
+          cp -a "$stage/ota" "$stage/flash" "$stage/manifest.json" site/
+          # The same check again, with main's tools, on the tree that will be served.
+          python3 scripts/make_release.py --verify-site site
+
+          git add -A -- site/ota site/flash site/manifest.json
+          if git diff --cached --quiet; then
+            echo "::error title=Nothing to release::main already has exactly these files."
+            exit 1
           fi
+          git commit -q -m "Release $TAG"
+
+          # Nothing else writes to main during a release, but a human push can
+          # land between the fetch and here: rebase once and try again.
+          if ! git push origin main; then
+            echo "::warning::main moved while releasing; rebasing once and retrying."
+            git fetch origin main
+            git rebase origin/main
+            python3 scripts/make_release.py --verify-site site
+            git push origin main
+          fi
+          git log -1 --stat --format='%H %s'
+
+      - name: Upload site
+        # From main's tree, as pages.yml would serve it.
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: Deploy to Pages
+    # Pushes made with GITHUB_TOKEN do not start pages.yml, so the release
+    # deploys itself here.
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,121 @@
+# Once a day, ask every service the radar depends on the way the radar asks
+# (tools/api_watch.py) and keep one GitHub issue open for each that needs
+# attention: a feed that moved, changed its answer or went away, the update
+# manifest, or a certificate chain the radar's bundle no longer covers.
+#
+#   ok again          -> comment on its open issue and close it
+#   changed/unreachable -> open "API watch: <service> needs attention", or add a
+#                          comment to the one that is already open
+#   unknown from runner -> nothing: the service refused this GitHub runner, which
+#                          says nothing about a radar at home
+#
+# Run it by hand from the Actions tab; tick "dry run" to only look.
+name: API watch
+
+on:
+  schedule:
+    # Once a day, off the busy minutes.
+    - cron: "43 5 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Check and report only: do not open, comment on or close issues"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: api-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install the certificate check's dependencies
+        run: pip install -r scripts/requirements-release.txt
+
+      - name: Check every service
+        id: watch
+        # Exit status 1 means "something needs attention". The issues below
+        # have to be handled either way, so the step may fail; the last step
+        # turns the run red.
+        continue-on-error: true
+        run: |
+          python3 tools/api_watch.py \
+              --report "$RUNNER_TEMP/api-watch.md" --json "$RUNNER_TEMP/api-watch.json"
+
+      - name: Open, update and close issues
+        if: ${{ !cancelled() && github.event.inputs.dry_run != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          results="$RUNNER_TEMP/api-watch.json"
+          if [ ! -s "$results" ]; then
+            echo "::error title=No results::tools/api_watch.py wrote no results; see the step above."
+            exit 1
+          fi
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          body="$RUNNER_TEMP/issue-body.md"
+
+          # A plain listing, not `gh issue list --search`: the search index
+          # lags behind a new issue, and a second run that minute would open a
+          # duplicate. The title is matched exactly.
+          open_issues="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 200 --json number,title)"
+
+          while IFS= read -r service; do
+            name="$(jq -r .name <<<"$service")"
+            status="$(jq -r .status <<<"$service")"
+            title="API watch: $name needs attention"
+            numbers="$(jq -r --arg t "$title" '.[] | select(.title == $t) | .number' <<<"$open_issues")"
+            first="$(head -n 1 <<<"$numbers")"
+
+            case "$status" in
+              changed|unreachable)
+                {
+                  jq -r '"**" + .name + ": " + .label + ".**"' <<<"$service"
+                  echo
+                  jq -r .details <<<"$service"
+                  echo "Found by [this API watch run]($run_url). Every service in that run:"
+                  echo
+                  jq -r .table "$results"
+                } > "$body"
+                if [ -n "$first" ]; then
+                  echo "$name: $status; commenting on #$first"
+                  gh issue comment "$first" --repo "$GITHUB_REPOSITORY" --body-file "$body"
+                else
+                  echo "$name: $status; opening an issue"
+                  gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file "$body"
+                fi
+                ;;
+              ok)
+                for number in $numbers; do
+                  echo "$name: ok again; closing #$number"
+                  gh issue close "$number" --repo "$GITHUB_REPOSITORY" --comment \
+                    "$name answers the way the radar expects again ($(jq -r .summary <<<"$service")). [API watch run]($run_url)"
+                done
+                ;;
+              *)
+                echo "$name: $status; leaving any open issue as it is"
+                ;;
+            esac
+          done < <(jq -c '.services[]' "$results")
+
+      - name: Fail the run when a service needs attention
+        if: ${{ !cancelled() && steps.watch.outcome == 'failure' }}
+        run: |
+          echo "::error title=API watch::a service the radar depends on needs attention; see the summary and the issues."
+          exit 1

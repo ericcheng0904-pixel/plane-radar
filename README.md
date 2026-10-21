@@ -199,8 +199,8 @@ the pack again. Without a pack the card shows the airline's code.
 
 ### Releasing
 
-Releases are signed on the maintainer's computer and published to GitHub Pages;
-CI only builds, checks and deploys what is committed. The steps are in
+Pushing a version tag (`vX.Y.Z`) makes CI build the firmware, sign it with a
+key held as a repository secret, and publish it to GitHub Pages. The steps are in
 [docs/RELEASING.md](docs/RELEASING.md) and the update rules in
 [docs/OTA.md](docs/OTA.md). A radar installs only an image signed with the key
 whose public half is in `include/ota_public_key.h`. If you fork the project,
@@ -399,7 +399,7 @@ aim is to keep the reachable surface as small as the feature set allows.
 |---------|-----|
 | `/update`, `/u`, `/erase`, `/restart` return 404 | WiFiManager registers an **unauthenticated firmware-upload page** plus credential-wipe and reboot endpoints on every portal, and links the upload form from its menu. Its own authentication hook is a no-op in 2.0.17. Nothing here needs those routes: an update is fetched and signature-checked by the radar itself, never uploaded to it, and a credential reset is a 10 s BOOT hold. The web-server callback runs before the library registers its routes and ESP32's `WebServer` uses the first match, so claiming the URIs there shadows them for good. |
 | Setup AP is WPA2-protected | An open AP lets anyone in radio range hand the radar a network of their choice. The password is derived from the board's MAC, so it is stable and printable on the setup screen. |
-| Only signed, newer updates | The radar installs an update only if its ECDSA (P-256) signature checks out against the public key built into the firmware, its SHA-256 matches, and its version is strictly newer than the running one. The signing key stays on the maintainer's computer, never in the repository or CI. A new image runs on trial and rolls back by itself if it fails ([docs/OTA.md](docs/OTA.md)). |
+| Only signed, newer updates | The radar installs an update only if its ECDSA (P-256) signature checks out against the public key built into the firmware, its SHA-256 matches, and its version is strictly newer than the running one. The signing key is never in the repository: it is an encrypted repository secret that only the release workflow reads, plus the maintainer's backup. A new image runs on trial and rolls back by itself if it fails ([docs/OTA.md](docs/OTA.md)). |
 | Flight data and updates over HTTPS, certificates checked | Each server's certificate is checked against an embedded root bundle (Mozilla's list, `data/cert/`). If one server's certificate is rejected six times in a row, the radar stops checking that server rather than going dark for good; the settings page then says "certificate not checked". A monthly CI job checks every server against the bundle so a change on their side is noticed first. For updates the signature protects the image either way. |
 | Response size cap (128 KB on the wire) | The chip has 320 KB of RAM and a TLS connection takes about 45 KB, so the frame is drawn in two 120-row halves rather than from one 115 KB buffer. The reply is stream-parsed through a field filter rather than buffered, and the byte cap stops an endless one before it exhausts the heap. |
 | `/screen.bmp` is read-only | It shows anyone on your network what the radar shows — the same picture anyone in the room can see. |
@@ -499,9 +499,10 @@ docs/RELEASING.md          — how a release is signed and published
 |----------|------|--------|
 | [Build](.github/workflows/build.yml) | push, PR, manual | `plane-radar-supermini` artifact with the flashable images |
 | [Quality](.github/workflows/quality.yml) | push, PR, manual | unit tests, static analysis, font regeneration check, no-logos check |
-| [Release check](.github/workflows/release.yml) | git tag `v*` | builds the tag and runs the release checks; publishes nothing (releases are signed locally) |
+| [Release](.github/workflows/release.yml) | git tag `vX.Y.Z` | tests and builds the tag, signs it with the `OTA_SIGNING_KEY` secret, commits `site/` to `main` and deploys Pages |
 | [Pages](.github/workflows/pages.yml) | push to `main` touching `site/` | verifies the signed release like a radar would, then deploys the installer and update manifest |
 | [Certificate check](.github/workflows/cert-check.yml) | monthly, manual | checks every server the radar talks to against the embedded root bundle |
+| [API watch](.github/workflows/api-watch.yml) | daily, manual | asks every service the radar depends on (aircraft feeds, routes, town search, update site, certificates) the way the radar does, and opens an issue when one changes or goes away ([`tools/api_watch.py`](tools/api_watch.py)) |
 
 ---
 
