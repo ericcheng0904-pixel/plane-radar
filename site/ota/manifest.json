@@ -1,8 +1,8 @@
 {
-  "version": "v2.0.9",
-  "size": 1579312,
-  "sha256": "f9a0dbd025b2b5fadeb24678ac50456bd160ab34cf78cdd83bfc9d776531aee6",
-  "sig": "MEUCIHl0XN9I0U3Kx4gXq35aOyBMNn10cm0QahRmirkVYboNAiEA3mJy0biW3NK54JOFBA4qBBMu1pwjhl71vXnxT/S48kw=",
+  "version": "v2.0.10",
+  "size": 1572736,
+  "sha256": "7dc910435ac488f309cd19ef353b5cc5b86d76cf158df64e94152e30f33970d2",
+  "sig": "MEYCIQD5aK8hiW2AeZdV49VbL4zAyeyCGIj7iw3v7ioVI3VczQIhAIRou1tW67Uc/V+fHKyYu/vuFBVxfhl4RDGKWgqqaPtI",
   "min_free_heap_hint": 57344,
-  "notes": "Fix: updates no longer roll back by mistake"
+  "notes": "First release signed by GitHub Actions"
 }
