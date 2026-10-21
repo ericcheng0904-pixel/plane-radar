@@ -3,6 +3,11 @@
 Releases are installed over the air by radars running an earlier release
 (docs/OTA.md). Newest first.
 
+## v2.0.10
+
+- First release built, signed and published by GitHub Actions from a tag
+  (no functional change).
+
 ## v2.0.9
 
 - Fix: a new release on trial was rolled back the moment Wi-Fi came up

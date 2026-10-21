@@ -130,8 +130,10 @@ update".
   `config::kOtaPublicKeyIsPlaceholder` says whether it is real, and
   `config::kOtaPublicKeyFingerprint` is the first 8 bytes of its SHA-256 in hex
   (for logs; `make_release.py` prints the same).
-- **Private key:** on the maintainer's computer only, never in the repository
-  or CI ([RELEASING.md](RELEASING.md)).
+- **Private key:** the encrypted Actions secret `OTA_SIGNING_KEY`, used only by
+  the Release workflow, which signs each tagged release; never in the
+  repository ([RELEASING.md](RELEASING.md)). Whoever can push a tag can
+  publish an update: keep two-factor sign-in on the owning account.
 
 With the mbedTLS 2.28 that Arduino-ESP32 2.0.14 ships:
 
