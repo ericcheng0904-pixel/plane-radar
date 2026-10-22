@@ -3,6 +3,10 @@
 Releases are installed over the air by radars running an earlier release
 (docs/OTA.md). Newest first.
 
+## v2.0.12
+
+- Release used to test v2.0.11's updater end to end (no change).
+
 ## v2.0.11
 
 - Fix: in a long adsb.fi outage the reserve, adsb.lol, was used up for the
