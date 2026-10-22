@@ -14,10 +14,13 @@
 #include <cstring>
 
 #include "config.h"
+#include "services/capped_reader.h"
+#include "services/memory.h"
 #include "services/radar_location.h"
 #include "services/tls.h"
 #include "util/coords.h"
 #include "util/geocode.h"
+#include "util/json_budget.h"
 
 namespace services::geocode {
 
@@ -29,6 +32,14 @@ constexpr unsigned kCount = 10;
 constexpr int kTimeoutMs = 8000;
 /** Ten answers are about 4 KB; anything far bigger is not an answer. */
 constexpr int kMaxBodyBytes = 32 * 1024;
+/** Reading the body, once the headers are in. */
+constexpr unsigned long kBodyMs = 8000;
+/**
+ * The fields kept from ten answers take ~2.8 KB of document ("San Jose", the
+ * biggest measured); three times that ends an answer that is not one long
+ * before it could crowd out Wi-Fi.
+ */
+constexpr size_t kDocumentBudget = 8 * 1024;
 /**
  * Reported as failed after this long, so the page stops waiting. Covers the
  * slowest real case: an HTTPS handshake plus two searches that time out.
@@ -86,8 +97,11 @@ int get(WiFiClient& client, const char* url, const JsonDocument& filter, JsonDoc
     http.end();
     return code == HTTP_CODE_OK ? 0 : code;
   }
+  // getSize() is -1 when the server sends no Content-Length, and a server
+  // can send more than it announced.
+  services::http::CappedReader reader(http.getStream(), kMaxBodyBytes, kBodyMs);
   const DeserializationError err =
-      deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+      deserializeJson(doc, reader, DeserializationOption::Filter(filter));
   http.end();
   if (err) {
     Serial.printf("geocode: JSON %s\n", err.c_str());
@@ -111,7 +125,9 @@ Outcome search(const util::geocode::Query& q, Place* out) {
                           "feature_code", "population"}) {
     f[key] = true;
   }
-  JsonDocument doc;
+  util::JsonBudget budget(kDocumentBudget, services::memory::canSpare,
+                          &services::memory::kDocumentHeap);
+  JsonDocument doc(&budget);
   int code = 0;
   if (s_https) {
     if (!services::tls::enoughMemory()) {

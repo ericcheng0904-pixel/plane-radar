@@ -38,6 +38,20 @@ class FeedFailover {
   void success(unsigned long now_ms);
 
   /**
+   * Off the first feed: go back to it now if it is time to see whether it is
+   * up again, as success() does: `primary_retry_ms` after the move to this
+   * feed. True when it switched.
+   */
+  bool retryPrimary(unsigned long now_ms) { return retryPrimary(now_ms, primary_retry_ms_); }
+
+  /**
+   * The same, `after_ms` after the move instead. For a caller holding back
+   * from the current feed (a reserve on a ration): the first feed can be
+   * tried sooner then, as a pass that sends the reserve nothing is free.
+   */
+  bool retryPrimary(unsigned long now_ms, unsigned long after_ms);
+
+  /**
    * The current feed did not answer usefully. `rest_ms` > 0: it rate-limited,
    * leave it alone that long and move on at once.
    */

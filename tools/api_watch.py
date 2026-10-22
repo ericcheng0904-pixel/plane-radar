@@ -47,6 +47,7 @@ import base64
 import binascii
 import datetime
 import json
+import math
 import os
 import re
 import subprocess
@@ -67,6 +68,10 @@ BODY_SNIPPET_CHARS = 1500
 
 # The radar's centre of the world for this check: O'Hare, always busy.
 LAT, LON = 41.9786, -87.9048
+# The radius asked of the feeds below, and how far out the radar still takes
+# an aircraft as part of the answer (util::feed_answer::kReachFactor).
+FEED_RADIUS_NM = 10
+REACH_FACTOR = 1.5
 
 PAGES_OTA = "https://ericcheng0904-pixel.github.io/plane-radar/ota/"
 ROUTES_HTTP = "http://adsb.im/api/0/routeset"
@@ -223,10 +228,21 @@ def is_number(value):
 
 # --- The services -----------------------------------------------------------------------
 
-def check_feed(name, url):
+def distance_km(lat1, lon1, lat2, lon2):
+    """Great-circle distance, as util::feed_answer::Area does it."""
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    a = (math.sin((p2 - p1) / 2) ** 2
+         + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2)
+    return 2 * 6371.0 * math.asin(min(1.0, math.sqrt(a)))
+
+
+def check_feed(name, url, radius_nm=FEED_RADIUS_NM):
     """
     An ADS-B feed. The radar (adsb_client.cpp) needs a JSON object with an "ac"
-    list, skips any aircraft without numeric lat/lon, and reads "now".
+    list, skips any aircraft without numeric lat/lon, and reads "now". It counts
+    an answer whose positioned aircraft lie mostly beyond 1.5 radii as the feed
+    failing (util::feed_answer::kReachFactor): a feed that starts ignoring the
+    radius is reported here before the radar keeps handing over to the other.
     """
     res = Result(name)
     ex = res.ask("GET", url)
@@ -248,6 +264,13 @@ def check_feed(name, url):
                               if not (isinstance(a, dict) and is_number(a.get("lat")) and is_number(a.get("lon"))))
                 if lacking:
                     problems.append("%d of %d aircraft have no numeric lat/lon" % (lacking, count))
+                reach_km = REACH_FACTOR * radius_nm * 1.852
+                placed = [a for a in aircraft
+                          if isinstance(a, dict) and is_number(a.get("lat")) and is_number(a.get("lon"))]
+                near = sum(1 for a in placed if distance_km(LAT, LON, a["lat"], a["lon"]) <= reach_km)
+                if near * 2 < len(placed):
+                    problems.append("only %d of %d aircraft lie within %.0f km: the radius is ignored"
+                                    % (near, len(placed), reach_km))
             if not is_number(doc.get("now")):
                 problems.append('there is no numeric "now"')
     if problems:
@@ -399,9 +422,9 @@ def check_certificates():
 
 SERVICES = (
     ("adsb.fi", lambda: check_feed(
-        "adsb.fi", "https://opendata.adsb.fi/api/v3/lat/%.4f/lon/%.4f/dist/10" % (LAT, LON))),
+        "adsb.fi", "https://opendata.adsb.fi/api/v3/lat/%.4f/lon/%.4f/dist/%d" % (LAT, LON, FEED_RADIUS_NM))),
     ("adsb.lol", lambda: check_feed(
-        "adsb.lol", "https://api.adsb.lol/v2/point/%.4f/%.4f/10" % (LAT, LON))),
+        "adsb.lol", "https://api.adsb.lol/v2/point/%.4f/%.4f/%d" % (LAT, LON, FEED_RADIUS_NM))),
     ("adsb.im routes", check_routes),
     ("Open-Meteo geocoding", check_geocoding),
     ("GitHub Pages", check_pages),

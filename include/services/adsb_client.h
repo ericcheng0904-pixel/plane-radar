@@ -58,21 +58,46 @@ const Aircraft* aircraftList();
  */
 unsigned long lastUpdateMs();
 
+/**
+ * millis() of the last answer with aircraft from a feed (0 before the first),
+ * whether they were shown or dropped as for an old centre. Unlike
+ * lastUpdateMs(), discardSweepsBefore() leaves it alone: it is what the
+ * no-data restart asks, so saving a setting does not look like a feed that
+ * stopped answering.
+ */
+unsigned long lastAnswerMs();
+
+/**
+ * millis() when the feed in use, held back by its daily ration, may next be
+ * asked; 0 when none is held back. For the screen, to say when the next
+ * update is due rather than that it is retrying.
+ */
+unsigned long pacedUntilMs();
+
 /** Hook invoked during long HTTP I/O (e.g. wifiLoop). Optional. */
 using PollFn = void (*)();
 void setPollFn(PollFn fn);
+
+/** How a fetchUpdate() pass went. */
+enum class FetchResult : uint8_t {
+  kAircraft,  // a feed answered: its aircraft are published
+  kFailed,    // none this time: a feed failed, refused or rests, or no room to ask
+  kPaced,     // nothing sent: the feed in use is rationed and its next request is not due
+};
 
 /**
  * Fetch aircraft within fetch_radius_km of center_lat/lon from the current
  * feed (HTTPS; see kFeeds in adsb_client.cpp): adsb.fi, else adsb.lol. A feed
  * that fails twice in a row hands over to the next, and one that rate-limits
  * (429) also rests for as long as it asks; the first is tried again every
- * five minutes.
+ * five minutes. adsb.lol is rationed: past the first requests of a day, a
+ * pass that comes before its pace allows sends nothing (kPaced), or tries
+ * adsb.fi again once 30 s have passed (util::feed_turn).
  * `started_ms` is millis() taken before center_lat/lon were read, so a sweep
  * for a centre that has since changed can be recognised and dropped.
  */
-bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km,
-                 unsigned long started_ms);
+FetchResult fetchUpdate(double center_lat, double center_lon, float fetch_radius_km,
+                        unsigned long started_ms);
 
 /**
  * Empty the aircraft list and ignore any sweep whose fetch started before
@@ -84,7 +109,10 @@ void discardSweepsBefore(unsigned long ms);
 /** HTTP status of the last fetchUpdate() (<= 0: HTTPClient transport error). */
 int lastHttpStatus();
 
-/** millis() when the last fetch started, whatever its outcome; 0 = never. */
+/**
+ * millis() when the last fetch pass started, whatever its outcome (one held
+ * back by the pace too); 0 = never.
+ */
 unsigned long lastAttemptMs();
 
 /** Name of the feed in use, i.e. asked next ("adsb.fi"), for the settings page. */
@@ -107,9 +135,6 @@ bool allFeedsFailing();
 
 /** Every feed is resting at its own request (refused, 429, allowance used). */
 bool allFeedsResting();
-
-/** How long the fetch task should wait after a good fetch (slower on a reserve). */
-unsigned long wantedIntervalMs();
 
 /**
  * One line about feeds that are resting or rationed, for the settings page

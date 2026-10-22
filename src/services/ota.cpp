@@ -21,7 +21,9 @@
 #include "config.h"
 #include "ota_public_key.h"
 #include "services/adsb_client.h"
+#include "services/memory.h"
 #include "services/tls.h"
+#include "util/json_budget.h"
 #include "util/release_version.h"
 
 /**
@@ -58,6 +60,12 @@ constexpr unsigned long kConfirmAfterMs = 15 * kMinute;
 constexpr unsigned long kTrialMs = 20 * kMinute;
 constexpr unsigned long kTrialCapMs = 40 * kMinute;
 constexpr int kManifestMaxBytes = 1024;
+/**
+ * Memory for the parsed manifest: today's takes ~1.4 KB, a flat object of
+ * kManifestMaxBytes at most ~3.1 KB. The parser reads on past a short
+ * Content-Length, so without a limit a server could fill the heap with it.
+ */
+constexpr size_t kManifestDocBytes = 4 * 1024;
 constexpr size_t kSlotBytes = 0x1C0000;
 /** Free heap to start with (docs/OTA.md): TLS, Update's buffer, margin. */
 constexpr size_t kMinFreeHeap = 56 * 1024;
@@ -149,7 +157,9 @@ bool fetchManifest(Manifest* m) {
     setStatus(text);
     return false;
   }
-  JsonDocument doc;
+  util::JsonBudget budget(kManifestDocBytes, services::memory::canSpare,
+                          &services::memory::kDocumentHeap);
+  JsonDocument doc(&budget);
   const DeserializationError err = deserializeJson(doc, http.getStream());
   http.end();
   if (err) {

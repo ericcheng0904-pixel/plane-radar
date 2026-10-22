@@ -63,7 +63,9 @@ The button is marked **BOOT**.
   router is on and that the network is 2.4 GHz.
 - **No planes, or "No flight data".** Unplug it and plug it back in. Check the
   Wi-Fi as above, and that the internet works. Tap the button for a wider
-  range. Some skies are quiet.
+  range. Some skies are quiet. "Next update in 3 min" under it means the main
+  flight data service is down and the radar is on its reserve, which allows
+  only a few updates an hour: nothing to do, it goes back by itself.
 - **It feels warm.** That is normal.
 
 ### Updates and giving it away
@@ -115,10 +117,10 @@ Built on top of the fork above, and checked on a real radar through the
 | 🎨 | **Themes** (Settings → Theme): *Scope* (default), *Map* — deep blue with land as a halftone dot pattern, 12 spokes, double bezel, orange aircraft and a double-ring reticle, after the Kongji S1 "blue" skin — *Classic* green on black, and *Sweep*, a rotating beam whose afterglow lights the blips as it passes (redraws at 8 fps instead of 4). |
 | 🌙 | **Night dimming** — the screen dims from dusk to dawn where the radar is. A setting. |
 | 🔄 | **Upstream pipeline merged** — background fetch task and 4 Hz dead-reckoned redraw from MatixYo/ESP32-Plane-Radar pull requests #90 and #94. |
-| 🌐 | **Aircraft over HTTPS, with a reserve** — opendata.adsb.fi (v3 API) first and api.adsb.lol as the reserve, with automatic failover. Certificates are checked against an embedded root bundle (`data/cert/`, built by `scripts/build_cert_bundle.py`; CI checks every server against it monthly with `scripts/check_hosts_against_bundle.py`). A TLS handshake does not fit in RAM next to a whole-frame buffer, so the frame is drawn in two 120-row halves. A feed that refuses (4xx) is rested for hours, adsb.lol is limited to 400 requests a day, and both are remembered across restarts. See [Where the data comes from](#where-the-data-comes-from). |
+| 🌐 | **Aircraft over HTTPS, with a reserve** — opendata.adsb.fi (v3 API) first and api.adsb.lol as the reserve, with automatic failover. Certificates are checked against an embedded root bundle (`data/cert/`, built by `scripts/build_cert_bundle.py`; CI checks every server against it monthly with `scripts/check_hosts_against_bundle.py`). A TLS handshake does not fit in RAM next to a whole-frame buffer, so the frame is drawn in two 120-row halves. A feed that refuses (4xx) is rested for hours, adsb.lol is rationed to stay well inside its daily allowance (the first 60 requests of a day at the usual 10 s, then one every 4.5 min, 400 at most), and both are remembered across restarts. See [Where the data comes from](#where-the-data-comes-from). |
 | ⚡ | **~60% less drawing work** — a frame took 141 ms (runways re-tested all 1,706 entries every frame, water shore was found pixel by pixel); now ~55 ms, which also means less heat. |
 | 🧭 | **Origin and destination** — tags read flight number / route (`ORD-LAF`) / altitude, the card adds "SNA → DTW" (always IATA codes). From adsb.im's route API (it checks each route against the aircraft's position; implausible ones are not shown), at most one batch of 8 flights every 20 s, answers cached for hours. It starts on plain HTTP and follows a redirect to HTTPS by itself. Multi-stop flight numbers ("ORD-CHS-ORD") are cut to the leg being flown when the aircraft is clearly landing at or leaving a stop. With no trusted route, an airline flight (not a helicopter or light aircraft) low near a major airport and clearly descending toward it or climbing away gets one end: "→ ORD" / "ORD →" (util::airport_guess: below 10,000 ft, within 35 km, plausible height for the distance, track within 30°, nearest airport clearly nearest). |
-| 🛟 | **Self-repair for unattended use** — restarts itself if the display loop stalls, fetching stops, no data arrives for 30 min, memory stays low, and once a day; the reason is shown on the settings page. A saved Wi-Fi that is out of reach at power-up (router still starting) is retried every 3 min instead of leaving the radar in setup mode. "No flight data" appears on screen when it applies. |
+| 🛟 | **Self-repair for unattended use** — restarts itself if the display loop stalls, fetching stops, no data arrives for 30 min, memory stays low or HTTPS keeps finding no room, and once a day; the reason is shown on the settings page. A saved Wi-Fi that is out of reach at power-up (router still starting) is retried every 3 min instead of leaving the radar in setup mode. "No flight data" appears on screen when it applies. |
 | 📱 | **Guided setup from a phone** — two steps on the round screen, each with a QR code: join the setup hotspot and pick the home Wi-Fi (tried before it is kept; a wrong password or a 5 GHz-only network is named on screen), then open the settings page and give a town, ZIP code, pasted coordinates or a map link. "Wi-Fi lost" after 25 s, a restart into the hotspot path after 10 min, and **Reset for a new owner**. See [If you were given one](#if-you-were-given-one). |
 | ℹ️ | **Info screen** — hold the button 2–9 s and let go: a QR code and the address of the settings page, the version and the data status. Holding 10 s forgets only the Wi-Fi. |
 | 🔐 | **Signed over-the-air updates** — the flash has two 1.75 MB app slots. About once a day (and a few minutes after power-up) the radar looks for a release on GitHub Pages and installs it only if it is newer and its signature checks out against the key built into the firmware. The new image runs on trial and is kept only after it has joined Wi-Fi, drawn the radar, fetched aircraft and run for 15 minutes; otherwise the radar goes back to the old one by itself. Wi-Fi, location, settings and the logo pack are kept. See [docs/OTA.md](docs/OTA.md) and [docs/RELEASING.md](docs/RELEASING.md). |
@@ -352,8 +354,16 @@ v3) first, with [adsb.lol](https://api.adsb.lol/docs) as the reserve. After two
 failures in a row the radar switches to the other feed, and goes back to
 adsb.fi as soon as it answers. A feed that refuses (HTTP 400, 401, 403 or 404)
 is rested for hours; one that says "too many requests" (429) is left alone for
-as long as it asks. adsb.lol is limited to 400 requests a day. This feed state
-survives a restart, so a refusal is not forgotten and asked about again at once.
+as long as it asks. adsb.lol allows 500 requests a day per address, so the
+radar rations it: the first 60 of a day go at the usual 10 s, and after that
+one every 4.5 minutes at most, which keeps a whole day without adsb.fi under
+400 (the hard limit). Off adsb.fi the radar tries it again after five
+minutes, or after 30 s while adsb.lol's ration holds it back, so a short
+adsb.fi outage passes without "No flight data". In a long one aircraft come
+every 4.5 minutes and are hidden after 90 s, as where they are drawn is then
+a guess; the screen says "No flight data" and when the next update is due.
+This feed state survives a restart, so a refusal or a ration is not forgotten
+and asked about again at once.
 The radar polls about every 10 s, and the radius grows with the selected range so
 rim dots have something to show. Aircraft on the ground are hidden by default
 (`kAdsbShowGroundAircraft` in `include/config.h`).
@@ -401,7 +411,7 @@ aim is to keep the reachable surface as small as the feature set allows.
 | Setup AP is WPA2-protected | An open AP lets anyone in radio range hand the radar a network of their choice. The password is derived from the board's MAC, so it is stable and printable on the setup screen. |
 | Only signed, newer updates | The radar installs an update only if its ECDSA (P-256) signature checks out against the public key built into the firmware, its SHA-256 matches, and its version is strictly newer than the running one. The signing key is never in the repository: it is an encrypted repository secret that only the release workflow reads, plus the maintainer's backup. A new image runs on trial and rolls back by itself if it fails ([docs/OTA.md](docs/OTA.md)). |
 | Flight data and updates over HTTPS, certificates checked | Each server's certificate is checked against an embedded root bundle (Mozilla's list, `data/cert/`). If one server's certificate is rejected six times in a row, the radar stops checking that server rather than going dark for good; the settings page then says "certificate not checked". A monthly CI job checks every server against the bundle so a change on their side is noticed first. For updates the signature protects the image either way. |
-| Response size cap (128 KB on the wire) | The chip has 320 KB of RAM and a TLS connection takes about 45 KB, so the frame is drawn in two 120-row halves rather than from one 115 KB buffer. The reply is stream-parsed through a field filter rather than buffered, and the byte cap stops an endless one before it exhausts the heap. |
+| Response size and memory caps | The chip has 320 KB of RAM and a TLS connection takes about 45 KB, so the frame is drawn in two 120-row halves rather than from one 115 KB buffer. The reply is stream-parsed rather than buffered: the aircraft list one aircraft at a time (`util::feed_answer`), each through a field filter and within a memory limit of its own (`util::JsonBudget`, 4 KB), so an answer of any size takes the memory of one aircraft, and the nearest 64 are kept. Reading also stops while about 10 KB of the heap Wi-Fi can use is still free, unless the block fits in the RTC heap Wi-Fi cannot use (asked before each block), and after 128 KB on the wire or 8 s; an answer cut short shows the aircraft read so far, rather than the heap running out. A list mostly from outside the area asked about counts as that feed failing. Route, town search and update answers have a memory limit of their own, and route and town search answers are given up after 8 s or 32 KB. |
 | `/screen.bmp` is read-only | It shows anyone on your network what the radar shows — the same picture anyone in the room can see. |
 | Strict input parsing | Coordinates, checkboxes and every number field are validated in `include/util/`; a malformed field leaves the stored setting untouched. Covered by host tests. |
 | Settings form carries a token | A browser attaches no origin restriction to a plain form submit, so any web page you happened to have open could otherwise POST new settings to the radar. The settings page carries a random per-boot token that a foreign page cannot read, and a save without it is refused. |
@@ -483,7 +493,9 @@ scripts/                   — dataset, font and certificate generators, build c
 site/                      — web installer and update manifest (GitHub Pages)
 test/test_util/            — host unit tests
 test/test_setup/           — host unit tests for the guided setup
-test/test_feeds/           — host tests for feed failover and the daily allowance
+test/test_feeds/           — host tests for feed failover, adsb.lol's allowance and pace, and days of outages run through them
+test/test_json_budget/     — host tests for the memory budget of servers' answers
+test/test_feed_answer/     — host tests for reading a feed's answer one aircraft at a time, and judging it
 test/test_ota/             — host tests for the update rules
 test/test_logos/           — host tests: airline badge, brand table, logo seam
 tools/ota/                 — release tool tests (sign and verify, refusals)

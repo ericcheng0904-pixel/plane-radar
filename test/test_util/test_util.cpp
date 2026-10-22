@@ -439,6 +439,53 @@ void test_health_restarts_on_lasting_low_memory() {
                           static_cast<uint8_t>(util::health::check(s)));
 }
 
+// Plenty free in total, but no two pieces big enough for mbedTLS's record
+// buffers: every HTTPS attempt fails until a restart puts the heap together.
+void test_health_restarts_when_https_finds_no_room() {
+  auto s = healthy();
+  s.tls_no_room = 2;  // one or two can be bad luck
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Reason::kNone),
+                          static_cast<uint8_t>(util::health::check(s)));
+  s.tls_no_room = 3;
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Reason::kLowMemory),
+                          static_cast<uint8_t>(util::health::check(s)));
+}
+
+// The same heap, met by fetchUpdate's check before a request
+// (tls::enoughMemory()): the skips count as failed handshakes do, also after
+// a run that a handshake ended. They did not count, and the radar stayed
+// dark until the 30-minute no-data restart.
+void test_health_counts_requests_skipped_for_no_room() {
+  util::health::NoRoomRun run;
+  run.handshakeDone();  // the last fetch that went through
+  auto s = healthy();
+  for (uint8_t skips = 1; skips <= 2; ++skips) {
+    run.noRoom();
+    s.tls_no_room = run.inARow();
+    TEST_ASSERT_EQUAL_UINT8(skips, run.inARow());
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Reason::kNone),
+                            static_cast<uint8_t>(util::health::check(s)));
+  }
+  run.noRoom();
+  s.tls_no_room = run.inARow();
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Reason::kLowMemory),
+                          static_cast<uint8_t>(util::health::check(s)));
+}
+
+void test_no_room_run_ends_only_with_an_answer_read() {
+  util::health::NoRoomRun run;
+  run.noRoom();  // not sent: no room for a handshake
+  run.noRoom();  // a handshake that failed for want of it
+  run.handshakeDone();  // one goes through...
+  TEST_ASSERT_EQUAL_UINT8(0, run.inARow());
+  run.noRoomForAnswer();  // ...with no room to read its answer
+  TEST_ASSERT_EQUAL_UINT8(3, run.inARow());
+  run.handshakeDone();  // the next one's answer is read: the run is over
+  TEST_ASSERT_EQUAL_UINT8(0, run.inARow());
+  run.noRoom();
+  TEST_ASSERT_EQUAL_UINT8(1, run.inARow());
+}
+
 void test_health_daily_restart() {
   auto s = healthy();
   s.now_ms = 24UL * 60 * kMin + 1;
@@ -721,6 +768,9 @@ int main(int, char**) {
   RUN_TEST(test_health_restarts_after_long_no_data);
   RUN_TEST(test_health_no_data_counts_from_wifi_up_when_never_fetched);
   RUN_TEST(test_health_restarts_on_lasting_low_memory);
+  RUN_TEST(test_health_restarts_when_https_finds_no_room);
+  RUN_TEST(test_health_counts_requests_skipped_for_no_room);
+  RUN_TEST(test_no_room_run_ends_only_with_an_answer_read);
   RUN_TEST(test_health_daily_restart);
   RUN_TEST(test_route_cache_remembers_and_expires);
   RUN_TEST(test_route_cache_unknown_is_retried_sooner);

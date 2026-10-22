@@ -9,6 +9,7 @@
 
 #include "services/adsb_client.h"
 #include "services/radar_location.h"
+#include "services/tls.h"
 #include "util/health.h"
 
 namespace services::health {
@@ -101,7 +102,7 @@ void checkFromLoop() {
   s.loop_heartbeat_ms = 0;  // the loop cannot judge itself; see checkFromFetchTask
   s.wifi_up_since_ms = s_wifi_up_since_ms;
   s.last_attempt_ms = adsb::lastAttemptMs();
-  s.last_success_ms = adsb::lastUpdateMs();
+  s.last_success_ms = adsb::lastAnswerMs();  // not reset by a new centre or range
   s.feeds_resting = adsb::allFeedsResting();
   s.largest_free_block = block;
   if (block < util::health::Limits{}.low_memory_block) {
@@ -112,6 +113,7 @@ void checkFromLoop() {
     s_low_memory_since_ms = 0;
   }
   s.low_memory_since_ms = s_low_memory_since_ms;
+  s.tls_no_room = tls::noRoomInARow();
   const bool pending = !location::isSet();
   if (s_setup_pending && !pending) {
     s_setup_done_ms = now;

@@ -39,6 +39,8 @@ bool DailyBudget::take(unsigned long now_ms) {
   if (counts_[head_] < 0xFFFFu) {
     ++counts_[head_];
   }
+  last_ms_ = now_ms;
+  has_last_ = true;
   return true;
 }
 
@@ -56,6 +58,20 @@ unsigned long DailyBudget::msUntilFree(unsigned long now_ms) {
   return kHourMs;  // unreachable while used() >= limit_ > 0
 }
 
+unsigned long DailyBudget::paceLeftMs(unsigned long now_ms) {
+  if (pace_ms_ == 0 || !has_last_) {
+    return 0;
+  }
+  // With no request left in the window the last one is a day old, past any
+  // pace (and not to be measured across a millis() wrap-around).
+  const uint16_t in_window = used(now_ms);
+  if (in_window == 0 || in_window < burst_) {
+    return 0;
+  }
+  const unsigned long since = now_ms - last_ms_;
+  return since >= pace_ms_ ? 0 : pace_ms_ - since;
+}
+
 DailyBudget::Snapshot DailyBudget::save(unsigned long now_ms) {
   advance(now_ms);
   Snapshot s{};
@@ -64,6 +80,12 @@ DailyBudget::Snapshot DailyBudget::save(unsigned long now_ms) {
   }
   s.head = static_cast<uint8_t>(head_);
   s.into_hour_ms = static_cast<uint32_t>(now_ms - hour_start_ms_);
+  // Kept so a restart cannot cut a pace short. Only a recent one matters
+  // (paceLeftMs() asks only while requests are in the window).
+  const unsigned long since_last = now_ms - last_ms_;
+  s.since_last_ms = !has_last_ ? kNoRequest
+                    : since_last >= kNoRequest ? kNoRequest - 1
+                                               : static_cast<uint32_t>(since_last);
   return s;
 }
 
@@ -77,6 +99,8 @@ void DailyBudget::restore(const Snapshot& s, unsigned long now_ms) {
   // zero, which unsigned arithmetic carries through correctly.
   hour_start_ms_ = now_ms - into;
   started_ = true;
+  has_last_ = s.since_last_ms != kNoRequest;
+  last_ms_ = has_last_ ? now_ms - s.since_last_ms : 0;  // carried through as above
 }
 
 }  // namespace util

@@ -64,10 +64,16 @@ void FeedFailover::success(unsigned long now_ms) {
   feed_failures_ = 0;
   refusals_[current_] = 0;
   retrying_primary_ = false;
-  if (current_ != 0 && now_ms - since_ms_ >= primary_retry_ms_ && !resting(0, now_ms)) {
-    switchTo(0, now_ms);
-    retrying_primary_ = true;
+  retryPrimary(now_ms);
+}
+
+bool FeedFailover::retryPrimary(unsigned long now_ms, unsigned long after_ms) {
+  if (current_ == 0 || now_ms - since_ms_ < after_ms || resting(0, now_ms)) {
+    return false;
   }
+  switchTo(0, now_ms);
+  retrying_primary_ = true;
+  return true;
 }
 
 void FeedFailover::failure(unsigned long now_ms, unsigned long rest_ms) {

@@ -67,6 +67,9 @@ Reason check(const State& s, const Limits& limits) {
       s.now_ms - s.low_memory_since_ms > limits.low_memory_ms) {
     return Reason::kLowMemory;
   }
+  if (s.tls_no_room >= limits.tls_no_room) {
+    return Reason::kLowMemory;
+  }
 
   if (s.now_ms > limits.daily_ms) {
     return Reason::kDaily;

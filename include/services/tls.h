@@ -35,8 +35,29 @@ void configure(WiFiClientSecure& client, Host host, uint32_t read_timeout_ms);
  * Report how a request to `host` went: `http_code` as HTTPClient returned it.
  * Only a handshake that failed because the certificate was rejected counts
  * toward giving up on checking that server.
+ * @return true when the handshake failed for lack of memory on this radar:
+ *         not the server's fault, so no reason to try another one.
  */
-void noteResult(WiFiClientSecure& client, Host host, int http_code);
+bool noteResult(WiFiClientSecure& client, Host host, int http_code);
+
+/**
+ * A request not sent because enoughMemory() said no: it counts as an attempt
+ * that failed for lack of memory, like a handshake that did not fit. A heap
+ * too cut up for any handshake then ends in the low-memory restart
+ * (util::health::Limits::tls_no_room), not in skips until the 30-minute
+ * no-data one.
+ */
+void noteNoRoom();
+
+/**
+ * The request just reported to noteResult() got through the handshake, but
+ * there was no room to read its answer: it counts as an attempt that failed
+ * for lack of memory, as if noteResult() had not ended the run of them.
+ */
+void noteNoRoomForAnswer();
+
+/** HTTPS attempts in a row, to any server, that failed for lack of memory. */
+uint8_t noRoomInARow();
 
 /** False once the radar has given up checking `host`'s certificates. */
 bool verifying(Host host);

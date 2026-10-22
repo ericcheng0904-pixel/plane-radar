@@ -255,20 +255,38 @@ void adsbFetchTask(void*) {
     // No location yet (setup step 2): there is no sky to fetch.
     if (!looked_up && WiFi.status() == WL_CONNECTED && services::location::isSet()) {
       const unsigned long started = millis();  // before the centre is read
-      const bool ok = services::adsb::fetchUpdate(services::location::lat(),
-                                                  services::location::lon(),
-                                                  ui::radar::fetchRadiusKm(), started);
-      if (ok) {
-        interval_ms = services::adsb::wantedIntervalMs();
+      const services::adsb::FetchResult got =
+          services::adsb::fetchUpdate(services::location::lat(), services::location::lon(),
+                                      ui::radar::fetchRadiusKm(), started);
+      if (got == services::adsb::FetchResult::kAircraft) {
+        interval_ms = config::kAdsbFetchIntervalMs;
         services::routes::refresh();  // origin/destination for new flights
+      } else if (got == services::adsb::FetchResult::kPaced) {
+        // adsb.lol's ration holds the next request back: not a failure, and
+        // looked at again at the usual interval, so aircraft come as soon as
+        // the pace allows. A pass held back sends nothing and takes no time.
+        interval_ms = config::kAdsbFetchIntervalMs;
       } else if (services::adsb::allFeedsFailing()) {
         // Every feed has failed in turn (outage, rate limits): back off.
         interval_ms = std::min(interval_ms * 2, config::kAdsbMaxBackoffMs);
         Serial.printf("adsb: all feeds failing, next try in %lu s\n", interval_ms / 1000);
       }
     }
+    // The fetch an update check or a town lookup displaced is due: wait no
+    // longer than the usual interval for it. Waiting a whole backoff after
+    // such a pass as well put up to ~195 s between fetch attempts, and the
+    // health check restarts the radar after 180 s without one (measured
+    // from the start of fetchUpdate). With every step of a request running
+    // to its timeout (connect 5 s, handshake 12 s, headers 8 s, body 8 s), a
+    // fetch takes ~33 s and a route request ~32 s; routes follow only a
+    // fetch that worked, the 60 s backoff only one that failed. The longest
+    // gaps are then ~93 s after a failed fetch, ~75 s after one with routes,
+    // and ~143 s with an update check (~40 s) or a town search taking the
+    // next pass: well under 180 s. Even a DNS server taking its full 15 s
+    // for every name keeps the worst inside it (~173 s).
     // Woken early by a lookup request or a newly saved location.
-    services::geocode::idle(interval_ms);
+    services::geocode::idle(looked_up ? std::min(interval_ms, config::kAdsbFetchIntervalMs)
+                                      : interval_ms);
   }
 }
 

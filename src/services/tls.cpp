@@ -3,7 +3,10 @@
 #include <Arduino.h>
 #include <HTTPClient.h>
 #include <esp_heap_caps.h>
+#include <mbedtls/ssl.h>
 #include <mbedtls/x509.h>
+
+#include "util/health.h"
 
 /** Mozilla's roots, embedded by platformio.ini (board_build.embed_files). */
 extern const uint8_t kCertBundle[] asm("_binary_data_cert_x509_crt_bundle_bin_start");
@@ -32,6 +35,10 @@ constexpr size_t kMinFreeHeap = 48 * 1024;
  */
 bool s_verify[kHostCount] = {true, true, true, true, true};
 int s_verify_failures[kHostCount] = {};
+/** Attempts in a row without room. Fetch task only. */
+util::health::NoRoomRun s_no_room_run;
+/** s_no_room_run.inARow(), for the health check: one byte, no lock. */
+volatile uint8_t s_no_room = 0;
 
 size_t indexOf(Host host) { return static_cast<size_t>(host); }
 
@@ -50,33 +57,54 @@ void configure(WiFiClientSecure& client, Host host, uint32_t read_timeout_ms) {
   client.Stream::setTimeout(read_timeout_ms);
 }
 
-void noteResult(WiFiClientSecure& client, Host host, int http_code) {
+bool noteResult(WiFiClientSecure& client, Host host, int http_code) {
   const size_t i = indexOf(host);
   if (http_code != HTTPC_ERROR_CONNECTION_REFUSED) {
     // HTTPClient got past connecting, so the handshake went through; any
     // error came later (a timeout, a lost connection, a bad body).
     s_verify_failures[i] = 0;
-    return;
+    s_no_room_run.handshakeDone();
+    s_no_room = s_no_room_run.inARow();
+    return false;
   }
   char msg[80];
   const int err = client.lastError(msg, sizeof(msg));
   if (err >= -1) {
-    return;  // no TLS error: DNS, TCP or a handshake timeout
+    return false;  // no TLS error: DNS, TCP or a handshake timeout
   }
   Serial.printf("tls: %s: %s (-0x%04x)\n", kHostNames[i], msg, -err);
+  if (err == MBEDTLS_ERR_SSL_ALLOC_FAILED) {
+    // enoughMemory() can only see the largest block; the record buffers
+    // need two. The health check restarts the radar after a few of these.
+    noteNoRoom();
+    return true;
+  }
   // The bundle check reports a root it does not know as X509_FATAL_ERROR, not
   // CERT_VERIFY_FAILED.
   const bool cert_rejected =
       err == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED || err == MBEDTLS_ERR_X509_FATAL_ERROR;
   if (!s_verify[i] || !cert_rejected) {
-    return;  // the network, not the certificate
+    return false;  // the network, not the certificate
   }
   if (++s_verify_failures[i] >= kVerifyFailLimit) {
     s_verify[i] = false;
     Serial.printf("tls: %s certificate cannot be verified - continuing without checking\n",
                   kHostNames[i]);
   }
+  return false;
 }
+
+void noteNoRoom() {
+  s_no_room_run.noRoom();
+  s_no_room = s_no_room_run.inARow();
+}
+
+void noteNoRoomForAnswer() {
+  s_no_room_run.noRoomForAnswer();
+  s_no_room = s_no_room_run.inARow();
+}
+
+uint8_t noRoomInARow() { return s_no_room; }
 
 bool verifying(Host host) { return s_verify[indexOf(host)]; }
 

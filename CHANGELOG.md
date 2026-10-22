@@ -3,6 +3,65 @@
 Releases are installed over the air by radars running an earlier release
 (docs/OTA.md). Newest first.
 
+## v2.0.11
+
+- Fix: in a long adsb.fi outage the reserve, adsb.lol, was used up for the
+  day in about 75 minutes, and the radar then had no aircraft for most of a
+  day. adsb.lol is now rationed: the first 60 requests of a day at the usual
+  10 s, then one every 4.5 minutes, so a whole day stays under 400 (adsb.lol
+  allows 500). While adsb.lol waits, adsb.fi is tried every 30 s, so a short
+  adsb.fi outage passes without "No flight data". In a long one the screen
+  says when the next update is due ("next update in 3 min") instead of
+  "retrying...".
+- Fix: saving the display settings or a new location after the radar had
+  been on Wi-Fi for 30 minutes restarted it at once ("no flight data for 30
+  min"): emptying the screen for the new settings looked like a feed that
+  had sent nothing.
+- Fix: after an update check or a town search the next flight fetch could
+  wait up to a minute more, enough to trip the "flight data task stopped"
+  restart. It now follows within 10 s.
+- Fix: when the heap was cut into pieces too small for mbedTLS's two
+  16.7 KB record buffers, every HTTPS request failed ("SSL - Memory
+  allocation failed") and the radar blamed the feeds: it switched between
+  them and backed off until the 30-minute no-data restart. Found by fault
+  tests against a local mock feed. Such a failure no longer counts against
+  a feed, and three in a row restart the radar (reason "low memory"), which
+  puts the heap back together in a few seconds.
+- Redirects from a feed are no longer followed: HTTPClient opened the second
+  connection while the first one's strings still sat where the record
+  buffers go, so it always failed the same way. A feed that moves now counts
+  as failing (the other one takes over) and the daily API watch reports the
+  new address.
+- Fix: an answer far bigger than the one asked for (a fault test sent 3000
+  aircraft) used up the memory Wi-Fi and the display need, and could crash
+  the radar. The aircraft list is now read one aircraft at a time, so an
+  answer of any size takes the memory of one aircraft (under 2 KB), where a
+  weekday evening's at the widest range took 20-24 KB. Reading also stops
+  while about 10 KB of the memory Wi-Fi can use is still free, unless the
+  aircraft fits in the RTC memory Wi-Fi cannot use (filled first).
+- With more than 64 aircraft in range, the 64 nearest are shown, not the
+  first 64 of the feed's list.
+- An answer over 128 KB, still arriving after 8 s, or holding an aircraft
+  record over 4 KB is cut short, and the aircraft read up to there are shown
+  ("answer cut short" in the log). The time then comes from the answer's
+  Date header, as the feed's clock comes after the list, so the screen still
+  dims at night. Only the 128 KB cut is the feed answering a busy sky; a
+  stall, an early close or an oversized record counts against the feed, so
+  one that keeps doing it hands over to the other.
+- Route, town search and update answers have a memory limit of their own;
+  those too big are dropped. Route and town search answers are also given up
+  after 8 s or 32 KB.
+- An aircraft list mostly from far outside the area asked about (a feed that
+  ignores the radius) counts as that feed failing, so the other one takes
+  over; aircraft that far out are not drawn.
+- An answer the radar had no memory left to read no longer counts against the
+  feed; like the failed handshakes above, three in a row restart the radar.
+- A flight fetch skipped for lack of room for an HTTPS connection now counts
+  the same way; a radar with its memory cut up stayed dark until the
+  30-minute no-data restart.
+- A feed clock ("now") out of range, such as one sent in microseconds, no
+  longer sets the radar's clock to the year 2106; the Date header stands in.
+
 ## v2.0.10
 
 - First release built, signed and published by GitHub Actions from a tag

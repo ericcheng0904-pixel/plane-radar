@@ -728,6 +728,8 @@ struct FramePlan {
   size_t n = 0;
   bool no_data = false;
   bool waiting_first = false;
+  /** > 0: no data because the feed in use is rationed; its next answer is due this soon. */
+  unsigned long next_update_in_ms = 0;
   AircraftDrawItem items[services::adsb::kMaxAircraft];
   size_t draw_count = 0;
   BeyondDotDrawItem dots[services::adsb::kMaxAircraft];
@@ -774,6 +776,13 @@ void planAircraft(FramePlan& p) {
   p.waiting_first = base_ms == 0;
   p.no_data = base_ms == 0 ? s_now_ms > config::kNoDataNoticeMs
                            : s_now_ms - base_ms > config::kNoDataNoticeMs;
+  // In a long adsb.fi outage adsb.lol answers every 4.5 min (its ration), and
+  // the aircraft go after 90 s as above: say when the next update is due
+  // rather than "retrying...", which would look like a fault.
+  const unsigned long paced_until = services::adsb::pacedUntilMs();
+  p.next_update_in_ms =
+      paced_until != 0 && static_cast<long>(paced_until - s_now_ms) > 0 ? paced_until - s_now_ms
+                                                                        : 0;
   // No "set your location" prompt here any more: without a location the radar
   // is not shown at all, setup step 2 is (main.cpp).
   p.boot_held_ms = bootButtonHeldMs();
@@ -903,7 +912,14 @@ void paintAircraft(const FramePlan& p) {
     s_draw->setTextColor(glassColor(Rgb{255, 190, 90}));
     s_draw->drawString("No flight data", radar::kCenterX, 182);
     s_draw->setTextColor(glassColor(Rgb{170, 175, 190}));
-    s_draw->drawString(p.waiting_first ? "waiting for the first update" : "retrying...",
+    char next[32] = "";
+    if (p.next_update_in_ms > 0) {
+      snprintf(next, sizeof(next), "next update in %lu min",
+               (p.next_update_in_ms + 59999UL) / 60000UL);
+    }
+    s_draw->drawString(p.next_update_in_ms > 0 ? next
+                       : p.waiting_first       ? "waiting for the first update"
+                                               : "retrying...",
                        radar::kCenterX, 197);
     s_draw->setTextDatum(textdatum_t::top_left);
   }

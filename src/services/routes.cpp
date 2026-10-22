@@ -16,6 +16,8 @@
 
 #include "config.h"
 #include "services/adsb_client.h"
+#include "services/capped_reader.h"
+#include "services/memory.h"
 #include "services/radar_location.h"
 #include "services/tls.h"
 #include "data/large_airports.h"
@@ -23,6 +25,7 @@
 #include "util/airport_guess.h"
 #include "util/callsign.h"
 #include "util/format.h"
+#include "util/json_budget.h"
 
 namespace services::routes {
 
@@ -43,6 +46,14 @@ constexpr unsigned long kFailBackoffMs = 120000;
 constexpr int kTimeoutMs = 6000;
 /** Eight answers are ~3 KB; anything far bigger is not an answer. */
 constexpr int kMaxBodyBytes = 32 * 1024;
+/** Reading the body, once the headers are in: ~3 KB takes well under a second. */
+constexpr unsigned long kBodyMs = 8000;
+/**
+ * The three fields kept from eight answers take ~1.3 KB of document; three
+ * times that ends an answer that is not one (a captive portal, a changed
+ * API) long before it could crowd out Wi-Fi.
+ */
+constexpr size_t kDocumentBudget = 4 * 1024;
 
 util::RouteCache s_cache;
 SemaphoreHandle_t s_mutex = nullptr;
@@ -141,8 +152,11 @@ int post(WiFiClient& client, const char* url, const String& body,
     http.end();
     return code == HTTP_CODE_OK ? 0 : code;
   }
+  // getSize() is -1 when the server sends no Content-Length, and a server
+  // can send more than it announced.
+  services::http::CappedReader reader(http.getStream(), kMaxBodyBytes, kBodyMs);
   const DeserializationError err =
-      deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+      deserializeJson(doc, reader, DeserializationOption::Filter(filter));
   http.end();
   if (err) {
     Serial.printf("routes: JSON %s\n", err.c_str());
@@ -183,7 +197,9 @@ void refresh() {
   filter[0]["callsign"] = true;
   filter[0]["_airport_codes_iata"] = true;
   filter[0]["plausible"] = true;
-  JsonDocument doc;
+  util::JsonBudget budget(kDocumentBudget, services::memory::canSpare,
+                          &services::memory::kDocumentHeap);
+  JsonDocument doc(&budget);
   int code = 0;
   if (s_https) {
     if (!services::tls::enoughMemory()) {
@@ -224,7 +240,7 @@ void refresh() {
       continue;
     }
     known += r.known ? 1 : 0;
-    Serial.printf("routes: %s %s%s\n", r.callsign, codes,
+    Serial.printf("routes: %s %s%s\n", r.callsign, r.codes,
                   r.known || strcmp(codes, "unknown") == 0 ? "" : " (implausible)");
     lock();
     s_cache.put(r, stored);
