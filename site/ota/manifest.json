@@ -1,8 +1,8 @@
 {
-  "version": "v2.0.10",
-  "size": 1572736,
-  "sha256": "7dc910435ac488f309cd19ef353b5cc5b86d76cf158df64e94152e30f33970d2",
-  "sig": "MEYCIQD5aK8hiW2AeZdV49VbL4zAyeyCGIj7iw3v7ioVI3VczQIhAIRou1tW67Uc/V+fHKyYu/vuFBVxfhl4RDGKWgqqaPtI",
+  "version": "v2.0.11",
+  "size": 1584512,
+  "sha256": "2ba6cdb008a191c79e681f0727242149cc205fd1dd2c9c974f119ab9508dfcc1",
+  "sig": "MEUCIQCqXQ+7YDhRST8ACDePEf2TOv/qFN4+sTiOo08hWCOs4gIgB/v1KbTKk4pr95BVomtCDVaYxp2iuD28O6Z8lG0UxMo=",
   "min_free_heap_hint": 57344,
-  "notes": "First release signed by GitHub Actions"
+  "notes": "Heap-safe feed answers, no-room self-repair, paced reserve feed"
 }
