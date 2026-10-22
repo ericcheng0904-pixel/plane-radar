@@ -1,8 +1,8 @@
 {
-  "version": "v2.0.11",
+  "version": "v2.0.12",
   "size": 1584512,
-  "sha256": "2ba6cdb008a191c79e681f0727242149cc205fd1dd2c9c974f119ab9508dfcc1",
-  "sig": "MEUCIQCqXQ+7YDhRST8ACDePEf2TOv/qFN4+sTiOo08hWCOs4gIgB/v1KbTKk4pr95BVomtCDVaYxp2iuD28O6Z8lG0UxMo=",
+  "sha256": "955421c9d88ce38e72e26a2741d149ff616584ed7d9feb11845b967a41bc2e8b",
+  "sig": "MEQCIQD90YlEHygJYv1yIQaksOfcZ/o7w3HzsosKE3EU79LBcQIfGwRe1si9tTI1nzwM5CldQO4wzy8dfKem+qXjib3Rvw==",
   "min_free_heap_hint": 57344,
-  "notes": "Heap-safe feed answers, no-room self-repair, paced reserve feed"
+  "notes": "Release used to test v2.0.11's updater (no change)"
 }
