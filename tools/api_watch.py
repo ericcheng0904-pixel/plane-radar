@@ -63,7 +63,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 USER_AGENT = "PlaneRadar/watch (+https://github.com/ericcheng0904-pixel/plane-radar)"
 TIMEOUT_S = 20
 MAX_BODY_BYTES = 4 * 1024 * 1024
-BODY_SNIPPET_CHARS = 400
+BODY_SNIPPET_CHARS = 1500
 
 # The radar's centre of the world for this check: O'Hare, always busy.
 LAT, LON = 41.9786, -87.9048
