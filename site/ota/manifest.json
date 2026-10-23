@@ -1,8 +1,8 @@
 {
-  "version": "v2.0.12",
-  "size": 1584512,
-  "sha256": "955421c9d88ce38e72e26a2741d149ff616584ed7d9feb11845b967a41bc2e8b",
-  "sig": "MEQCIQD90YlEHygJYv1yIQaksOfcZ/o7w3HzsosKE3EU79LBcQIfGwRe1si9tTI1nzwM5CldQO4wzy8dfKem+qXjib3Rvw==",
+  "version": "v2.0.13",
+  "size": 1593024,
+  "sha256": "7d636d77d5193a54a457214c86d05d7adaf9fe9cc481c9a263f9ec4c0affbf3d",
+  "sig": "MEYCIQCGVoaYx4J+aAT+bANUfUF4iMbVVRG8DWajXUdJN3BImAIhAPYKtM9bziX26SJpLII1re3zo0ozKCGBoTbtf7Fna8ED",
   "min_free_heap_hint": 57344,
-  "notes": "Release used to test v2.0.11's updater (no change)"
+  "notes": "Welcome screen, short guide and radar name; settings page stack fix"
 }

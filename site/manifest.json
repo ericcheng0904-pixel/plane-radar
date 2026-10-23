@@ -1,6 +1,6 @@
 {
   "name": "Plane Radar",
-  "version": "v2.0.12",
+  "version": "v2.0.13",
   "new_install_prompt_erase": true,
   "new_install_improv_wait_time": 0,
   "builds": [
@@ -20,7 +20,7 @@
           "offset": 57344
         },
         {
-          "path": "ota/firmware-v2.0.12.bin",
+          "path": "ota/firmware-v2.0.13.bin",
           "offset": 65536
         }
       ]
