@@ -14,14 +14,11 @@
 </radialGradient>
 </defs>
 <rect width="1280" height="640" fill="url(#bg)"/>
-<rect x="64" y="156" width="72" height="4" rx="2" fill="#3ddc97"/>
-<text x="64" y="242" fill="#f4f8fb" font-family="Noto Sans" font-size="76" font-weight="700">Plane Radar</text>
-<text x="64" y="300" fill="#d5e0ea" font-family="Noto Sans" font-size="25">A live aircraft radar on a 1.28″ round display (ESP32-C3):</text>
-<text x="64" y="336" fill="#d5e0ea" font-family="Noto Sans" font-size="25">this version is extended firmware with a browser installer,</text>
-<text x="64" y="372" fill="#d5e0ea" font-family="Noto Sans" font-size="25">phone setup and over-the-air updates, built on the</text>
-<text x="64" y="408" fill="#d5e0ea" font-family="Noto Sans" font-size="25">hardware and case from MatixYo/ESP32-Plane-Radar</text>
-<text x="64" y="444" fill="#d5e0ea" font-family="Noto Sans" font-size="25">(MIT licence, kept in LICENSE) and the firmware of</text>
-<text x="64" y="480" fill="#d5e0ea" font-family="Noto Sans" font-size="25">the fabsface-max fork.</text>
+<rect x="48" y="200" width="72" height="4" rx="2" fill="#3ddc97"/>
+<text x="48" y="286" fill="#f4f8fb" font-family="Noto Sans" font-size="76" font-weight="700">Plane Radar</text>
+<text x="48" y="352" fill="#e7eef4" font-family="Noto Sans" font-size="40">Live aircraft overhead, on a 1.28″ round display</text>
+<text x="48" y="408" fill="#b7c8d6" font-family="Noto Sans" font-size="28">ESP32-C3 · install from your browser · phone setup · OTA updates</text>
+<g transform="translate(1111 320) scale(0.621) translate(-1032 -320)">
 <circle cx="1032" cy="320" r="222" fill="#061018" stroke="#1c4d6e" stroke-width="10"/>
 <circle cx="1032" cy="320" r="213" fill="none" stroke="#8fd0c2" stroke-width="2"/>
 <circle cx="1032" cy="320" r="206" fill="url(#scope)"/>
@@ -96,4 +93,5 @@
 <text x="1212.0" y="325.0" fill="#d5e6f0" font-family="Noto Sans" font-size="14" font-weight="700" text-anchor="middle">E</text>
 <text x="1032.0" y="505.0" fill="#d5e6f0" font-family="Noto Sans" font-size="14" font-weight="700" text-anchor="middle">S</text>
 <text x="852.0" y="325.0" fill="#d5e6f0" font-family="Noto Sans" font-size="14" font-weight="700" text-anchor="middle">W</text>
+</g>
 </svg>
