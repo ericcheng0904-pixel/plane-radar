@@ -439,6 +439,21 @@ void test_health_restarts_on_lasting_low_memory() {
                           static_cast<uint8_t>(util::health::check(s)));
 }
 
+// With mbedTLS's record buffers reserved at boot, the largest free piece sits
+// at ~9 KB for days on the radar, and nothing it asks for once running needs
+// more than the water mask's 6 KB: a piece that size is not low memory.
+void test_health_tolerates_the_reserved_heaps_largest_piece() {
+  auto s = healthy();
+  s.largest_free_block = 7 * 1024 + 512;
+  s.low_memory_since_ms = s.now_ms - 2 * 60 * kMin;
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Reason::kNone),
+                          static_cast<uint8_t>(util::health::check(s)));
+  // Too small for the water mask, for over a minute: restart.
+  s.largest_free_block = 6 * 1024;
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Reason::kLowMemory),
+                          static_cast<uint8_t>(util::health::check(s)));
+}
+
 // Plenty free in total, but no two pieces big enough for mbedTLS's record
 // buffers: every HTTPS attempt fails until a restart puts the heap together.
 void test_health_restarts_when_https_finds_no_room() {
@@ -768,6 +783,7 @@ int main(int, char**) {
   RUN_TEST(test_health_restarts_after_long_no_data);
   RUN_TEST(test_health_no_data_counts_from_wifi_up_when_never_fetched);
   RUN_TEST(test_health_restarts_on_lasting_low_memory);
+  RUN_TEST(test_health_tolerates_the_reserved_heaps_largest_piece);
   RUN_TEST(test_health_restarts_when_https_finds_no_room);
   RUN_TEST(test_health_counts_requests_skipped_for_no_room);
   RUN_TEST(test_no_room_run_ends_only_with_an_answer_read);

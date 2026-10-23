@@ -33,10 +33,11 @@ struct Heaps {
  * when the range or the place changes) is not reserved for: built during the
  * parse of a busy sky, it can cost Wi-Fi a few frames, which TCP sends again.
  *
- * ~81 KB is free at rest as ESP.getFreeHeap() counts it, ~7.5 KB of it the RTC
- * heap. The TLS session with HTTPClient and the filter takes ~45 KB (fault
- * tests: 36-38 KB left during a fetch), so a feed's answer starts with ~29 KB
- * of DRAM and the RTC heap. It is read one aircraft at a time, ~1.3 KB of
+ * ~45 KB is free at rest as ESP.getFreeHeap() counts it, ~7.5 KB of it the RTC
+ * heap, beside the 33 KB reserved for mbedTLS's record buffers. The rest of
+ * the TLS session with HTTPClient and the filter takes 12-15 KB (fault tests:
+ * ~28 KB left during a fetch), so a feed's answer starts with ~28 KB of DRAM
+ * and the RTC heap. It is read one aircraft at a time, ~1.3 KB of
  * document each (1.8 KB of heap, its largest block 1 KB: services::adsb's
  * kAircraftBudget), given back before the next, so this reserve is only
  * reached when the heap was short before the request, and even then the RTC

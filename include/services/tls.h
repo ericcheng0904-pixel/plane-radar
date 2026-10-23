@@ -18,7 +18,9 @@
  * that still works beats one that is correct and dark.
  *
  * One connection at a time: a handshake needs ~45 KB, and the C3 has room for
- * one. Fetch task only.
+ * one. Its two 16.7 KB record buffers are reserved once, as the radar starts
+ * (reserveRecordBuffers()), and lent to every session. Fetch task only, but
+ * for reserveRecordBuffers().
  */
 namespace services::tls {
 
@@ -61,6 +63,37 @@ uint8_t noRoomInARow();
 
 /** False once the radar has given up checking `host`'s certificates. */
 bool verifying(Host host);
+
+/**
+ * Main loop, as the radar starts, once the frame buffer is taken: from the
+ * next HTTPS session on, mbedTLS's two record buffers (2 x 16.7 KB) are set
+ * aside for good and lent to every session, instead of being found anew each
+ * time in a heap the radar's running cuts into smaller pieces. The fetch task
+ * takes them, before that session; the frame buffer comes first because it
+ * needs the larger block. Without room for them, sessions take the buffers
+ * from the heap, as before, and each later one tries again.
+ */
+void reserveRecordBuffers();
+
+/**
+ * HTTPS and the web pages take turns. A session needs 12-15 KB of heap
+ * besides the reserved buffers and a page being sent ~15 KB more (lwIP's send
+ * buffer and Wi-Fi's copies of its frames): the two at once left ~1 KB free in
+ * a test that loaded pages during fetches, too little for Wi-Fi, and pages
+ * came out cut short. The fetch task holds the turn for each pass of network
+ * work; the main loop serves pages only when it can have it, so a request
+ * waits a moment in the backlog instead.
+ *
+ * Fetch task, before a pass: waits up to 1.5 s for a page being sent to
+ * finish, then goes ahead anyway (a slow client must not hold the radar's
+ * flights up), and up to 1 s more for the page's send buffers to come back.
+ */
+void beginSessions();
+/** Fetch task, after the pass. */
+void endSessions();
+/** Main loop: whether web pages may be served now. If so, endPages() after. */
+bool beginPages();
+void endPages();
 
 /**
  * Whether a handshake can be afforded right now. Starting one without the
