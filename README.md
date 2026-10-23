@@ -1,100 +1,41 @@
-# Plane Radar — extended firmware
+# Plane Radar
+
+A live aircraft radar on a 1.28″ round display (ESP32-C3): this version is
+extended firmware with a browser installer, phone setup and over-the-air
+updates, built on the hardware and case from
+[MatixYo/ESP32-Plane-Radar](https://github.com/MatixYo/ESP32-Plane-Radar)
+(MIT licence, kept in [LICENSE](LICENSE)) and the firmware of the
+[fabsface-max/ESP32-Plane-Radar](https://github.com/fabsface-max/ESP32-Plane-Radar)
+fork.
+
+<!-- hero: replace with media/hero.gif (owner clip) -->
 
 <img width="800" height="450" alt="plane-radar" src="https://github.com/user-attachments/assets/716d0992-dab8-47ba-8f1a-2aec7f607419" />
 
-A live aircraft radar on a 1.28″ round display. Point it at your home
-coordinates and it draws the planes actually flying overhead, updated every few
-seconds, on a sonar-style grid.
+**[Install in your browser](https://ericcheng0904-pixel.github.io/plane-radar/)**
+(Chrome or Edge).
 
-> **Credit first.** The radar, its hardware design and its case are
-> [MatixYo/ESP32-Plane-Radar](https://github.com/MatixYo/ESP32-Plane-Radar)
-> (MIT licence, kept in [LICENSE](LICENSE)). The extended firmware this version
-> builds on is the
-> [fabsface-max/ESP32-Plane-Radar](https://github.com/fabsface-max/ESP32-Plane-Radar)
-> fork. What each of them added is listed below, followed by what this version
-> adds. The work after the original was designed and written with
-> [Claude Code](https://claude.com/claude-code) (Anthropic) and verified on real
-> hardware before each change was kept.
+Were you given one? [Start here.](docs/GIFT_GUIDE.md)
 
----
+## What you need
 
-## If you were given one
+- An ESP32-C3 Super Mini
+- A 1.28″ round GC9A01 display, wired as in [Wiring](#wiring)
+- A USB-C cable and a 2.4 GHz Wi-Fi network
+- The 3D case on [MakerWorld](https://makerworld.com/en/models/2872376-esp32-plane-radar-live-ads-b-on-a-round-display#profileId-3207083)
 
-A small round screen that shows the planes flying near your home, live. Plug it
-into a USB charger, then set it up once from your phone. It takes a few minutes.
+## What's different from upstream
 
-**Step 1 of 2: join the radar's Wi-Fi and pick yours.** The screen shows a QR
-code. Scan it with the phone's camera. This joins the radar's own setup Wi-Fi,
-`PlaneRadar-Setup`. A page opens and says what the radar is (by its name, if
-it was given one). If it does not open, open `http://192.168.4.1`. Pick your
-home Wi-Fi, type its password, tap **Save**. Only 2.4 GHz networks work; the
-radar cannot use 5 GHz. No camera? Tap the button on the radar. It shows the
-network name and its password in words.
+| | [MatixYo/ESP32-Plane-Radar](https://github.com/MatixYo/ESP32-Plane-Radar) | [fabsface-max fork](https://github.com/fabsface-max/ESP32-Plane-Radar) | This version |
+|---|---|---|---|
+| Picture | One font, scaled down. Aircraft drawn as one triangle. | Native fonts at three sizes, airline names, a symbol per class, flight trails, direction lines that can be switched off, and an alert flash. | Info card, shapes by kind, flight-number tags, four themes, night dimming, and a Chicago-area water layer. |
+| Setup | Options sat under the Wi-Fi form, and the page could be cut off. The setup Wi-Fi was open. | Its own settings page, written in pieces, with navigation. The open setup Wi-Fi and the unauthenticated upload page are closed, transmit power is adjustable, and a short Wi-Fi drop leaves the picture up. | Phone setup with a QR code for each step, a welcome screen, and an info screen. |
+| Aircraft data | Open report: fetches fail with a JSON parse error ([#85](https://github.com/MatixYo/ESP32-Plane-Radar/issues/85)). | adsb.fi. | adsb.fi over HTTPS, with adsb.lol in reserve. Replies are stream-parsed, chunked bodies included, and the frame is drawn in two halves so a TLS handshake fits. |
+| Updates | Open issue: the portal Update page cannot install firmware, because there is no second app slot ([#102](https://github.com/MatixYo/ESP32-Plane-Radar/issues/102)). | The upload page is closed. A new image is flashed over USB. | Two app slots and signed over-the-air updates, plus the browser installer above. The upload page stays closed. |
+| Refresh | Open report: the screen stops refreshing until a reboot ([#109](https://github.com/MatixYo/ESP32-Plane-Radar/issues/109)). | A short Wi-Fi drop leaves the radar on screen. | Background fetch and a steady redraw (upstream pull requests #90 and #94). The radar restarts itself if the display loop stalls. |
+| Checks | — | Compiler warnings, host tests, static analysis, a firmware build and a hardware checklist, in CI. | The same pipeline. |
 
-If whoever gave it to you kept its location, the screen says **Wi-Fi setup**
-instead of *Step 1 of 2*, and this is the only step.
-
-**Step 2 of 2: tell it where you live.** Put the phone back on your home Wi-Fi.
-Scan the next QR code on the radar's screen. (Or open the address the screen
-shows, which ends in `/settings`. `http://plane-radar.local` works too.) Type a
-town or ZIP code, paste coordinates from a map app, or type latitude and
-longitude. Tap **Save location**.
-
-**Then it says welcome.** The first time it is on your Wi-Fi and knows where it
-is, the screen says *Welcome to* its name (or *your Plane Radar*) and shows a QR
-code for a short guide: what is on the screen, what the button does, and
-what to do if something looks wrong. Scan it with the phone on your home Wi-Fi.
-A tap on the button skips it, and it goes by itself after 3 minutes. Then the
-planes appear. The guide stays at `http://plane-radar.local/guide` (**Guide**
-in the menu of every page).
-
-### The button
-
-The button is marked **BOOT**.
-
-| What you do | What happens |
-|-------------|--------------|
-| **Tap** | Changes the range: 5, 10, 15, 25 km, then round again. On the welcome screen, skips it. |
-| **Hold 2 to 9 seconds, then let go** | While the radar is showing, shows an info screen: a QR code and the address of the settings page, the version, and whether flight data is arriving. A tap closes it. |
-| **Hold 10 seconds** | The radar forgets its Wi-Fi and goes back to step 1. Your location and settings are kept. A countdown shows from 2 seconds; let go before it ends and nothing is forgotten. |
-
-### Changing Wi-Fi or location later
-
-- **Location:** on your home Wi-Fi, open `http://plane-radar.local` (the info
-  screen shows the address too). Go to **Settings**, type a new town, ZIP code
-  or coordinates, tap **Save location**.
-- **Wi-Fi:** hold the button for 10 seconds, then do step 1 again. Use this
-  after a new router or a new Wi-Fi password.
-- Everything else (theme, text size, night dimming, alerts) is on the same
-  **Settings** page, at `http://plane-radar.local`.
-
-### If something looks wrong
-
-- **The screen says "Wi-Fi lost".** The radar keeps trying by itself, and
-  restarts after 10 minutes. Unplug it and plug it back in. Check that the
-  router is on and that the network is 2.4 GHz.
-- **No planes, or "No flight data".** Unplug it and plug it back in. Check the
-  Wi-Fi as above, and that the internet works. Tap the button for a wider
-  range. Some skies are quiet. "Next update in 3 min" under it means the main
-  flight data service is down and the radar is on its reserve, which allows
-  only a few updates an hour: nothing to do, it goes back by itself.
-- **It feels warm.** That is normal.
-
-### Updates and giving it away
-
-New versions arrive by themselves, about once a day. They keep your Wi-Fi,
-location and settings. If a new version does not work, the radar goes back to
-the old one by itself. You do not need to do anything. The **Settings** page
-shows the version and has a **Check for an update now** button.
-
-To give the radar to someone else, open **Settings** and tap **Reset for a new
-owner**. It asks again, then erases the location, the name, the settings and
-the Wi-Fi. Tick **Keep the location and the radar's name** if it stays in the
-area: the next person then only joins it to their Wi-Fi. Give it a name first
-if you like (**Settings**, *Name of this radar*): the setup page, the welcome
-screen and the guide greet them by it, as in "Welcome to Ada's radar". Reset it
-last: the welcome shows once, to whoever sets the radar up next. If you try it
-out yourself afterwards, reset it again before you give it away.
+The rows above are the short version of [What the fabsface-max fork added](#what-the-fabsface-max-fork-added) and [What this version adds](#what-this-version-adds).
 
 ---
 
@@ -139,7 +80,7 @@ Built on top of the fork above, and checked on a real radar through the
 | ⚡ | **~60% less drawing work** — a frame took 141 ms (runways re-tested all 1,706 entries every frame, water shore was found pixel by pixel); now ~55 ms, which also means less heat. |
 | 🧭 | **Origin and destination** — tags read flight number / route (`ORD-LAF`) / altitude, the card adds "SNA → DTW" (always IATA codes). From adsb.im's route API (it checks each route against the aircraft's position; implausible ones are not shown), at most one batch of 8 flights every 20 s, answers cached for hours. It starts on plain HTTP and follows a redirect to HTTPS by itself. Multi-stop flight numbers ("ORD-CHS-ORD") are cut to the leg being flown when the aircraft is clearly landing at or leaving a stop. With no trusted route, an airline flight (not a helicopter or light aircraft) low near a major airport and clearly descending toward it or climbing away gets one end: "→ ORD" / "ORD →" (util::airport_guess: below 10,000 ft, within 35 km, plausible height for the distance, track within 30°, nearest airport clearly nearest). |
 | 🛟 | **Self-repair for unattended use** — restarts itself if the display loop stalls, fetching stops, no data arrives for 30 min, memory stays low or HTTPS keeps finding no room, and once a day; the reason is shown on the settings page. A saved Wi-Fi that is out of reach at power-up (router still starting) is retried every 3 min instead of leaving the radar in setup mode. "No flight data" appears on screen when it applies. |
-| 📱 | **Guided setup from a phone** — two steps on the round screen, each with a QR code: join the setup hotspot and pick the home Wi-Fi (tried before it is kept; a wrong password or a 5 GHz-only network is named on screen), then open the settings page and give a town, ZIP code, pasted coordinates or a map link. "Wi-Fi lost" after 25 s, a restart into the hotspot path after 10 min, and **Reset for a new owner**. Afterwards a one-time welcome screen, by the radar's name if it has one, offers a short guide (`/guide`). See [If you were given one](#if-you-were-given-one). |
+| 📱 | **Guided setup from a phone** — two steps on the round screen, each with a QR code: join the setup hotspot and pick the home Wi-Fi (tried before it is kept; a wrong password or a 5 GHz-only network is named on screen), then open the settings page and give a town, ZIP code, pasted coordinates or a map link. "Wi-Fi lost" after 25 s, a restart into the hotspot path after 10 min, and **Reset for a new owner**. Afterwards a one-time welcome screen, by the radar's name if it has one, offers a short guide (`/guide`). See [If you were given one](docs/GIFT_GUIDE.md). |
 | ℹ️ | **Info screen** — hold the button 2–9 s and let go: a QR code and the address of the settings page, the version and the data status. Holding 10 s forgets only the Wi-Fi. |
 | 🔐 | **Signed over-the-air updates** — the flash has two 1.75 MB app slots. About once a day (and a few minutes after power-up) the radar looks for a release on GitHub Pages and installs it only if it is newer and its signature checks out against the key built into the firmware. The new image runs on trial and is kept only after it has joined Wi-Fi, drawn the radar, fetched aircraft and run for 15 minutes; otherwise the radar goes back to the old one by itself. Wi-Fi, location, settings and the logo pack are kept. See [docs/OTA.md](docs/OTA.md) and [docs/RELEASING.md](docs/RELEASING.md). |
 | 🧰 | **Browser installer** — new and repaired radars can be flashed from a web page served from GitHub Pages (`site/`). See [Build and flash](#build-and-flash). |
@@ -174,7 +115,7 @@ board and follow the page. It installs the newest published release. Leave
 *Erase* unticked to keep the radar's settings. If the board does not appear, put
 it into download mode: hold **BOOT**, tap **RESET**, release **BOOT**.
 
-Then follow [If you were given one](#if-you-were-given-one) for the setup.
+Then follow [If you were given one](docs/GIFT_GUIDE.md) for the setup.
 
 ### Build with PlatformIO
 
