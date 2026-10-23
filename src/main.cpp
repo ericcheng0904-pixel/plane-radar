@@ -20,6 +20,7 @@
 #include "services/ota.h"
 #include "services/routes.h"
 #include "services/radar_location.h"
+#include "services/tls.h"
 #include "services/welcome.h"
 #include "services/wifi_setup.h"
 #include "ui/alert.h"
@@ -132,6 +133,18 @@ void initTemperatureSensor() {
 #endif
 }
 
+/**
+ * The radar's two big blocks, taken once and while the heap is still whole:
+ * the frame buffer (57.6 KB), then mbedTLS's record buffers (2 x 16.7 KB),
+ * which the fetch task sets aside before its next session (services::tls).
+ * Later calls cost nothing.
+ */
+void reserveMemory() {
+  if (ui::radarDisplayReserve()) {
+    services::tls::reserveRecordBuffers();
+  }
+}
+
 void showRadarIfConnected() {
   // Without a location the radar would show the default's sky; setup step 2
   // asks for one instead (showSetupScreens). A new owner's welcome comes
@@ -140,6 +153,7 @@ void showRadarIfConnected() {
     g_radar_visible = false;
     return;
   }
+  reserveMemory();
   ui::radarDisplayDraw();
   g_radar_visible = true;
   services::ota::noteRadarDrawn();
@@ -234,7 +248,7 @@ bool showWelcome() {
   const uint32_t ip = static_cast<uint32_t>(WiFi.localIP());
   if (g_setup_screen != SetupScreen::kWelcome || ip != g_setup_screen_ip) {
     // As on step 2: the frame buffer is taken while the heap is still whole.
-    ui::radarDisplayReserve();
+    reserveMemory();
     statusScreenWelcome(services::welcome::name(), WiFi.localIP().toString().c_str());
     g_setup_screen = SetupScreen::kWelcome;
     g_setup_screen_ip = ip;
@@ -278,7 +292,7 @@ bool showSetupScreens() {
   }
   const uint32_t ip = static_cast<uint32_t>(WiFi.localIP());
   if (g_setup_screen != SetupScreen::kLocationStep || ip != g_setup_screen_ip) {
-    ui::radarDisplayReserve();
+    reserveMemory();
     statusScreenLocationStep(WiFi.localIP().toString().c_str());
     g_setup_screen = SetupScreen::kLocationStep;
     g_setup_screen_ip = ip;
