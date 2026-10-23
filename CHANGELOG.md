@@ -22,6 +22,13 @@ Releases are installed over the air by radars running an earlier release
   server's certificate failing to verify, and six in a row would have
   stopped the radar checking that server. It now counts as the radar being
   short of memory.
+- Fix: a web page loaded while the radar was fetching flights could leave
+  Wi-Fi almost no memory: the page came out cut short and the fetch failed.
+  The two now take turns, so a page asked for during a fetch waits a
+  second or two.
+- The low-memory restart now waits for the largest free piece of memory to
+  stay under 6.5 KB (was 8 KB): with the buffers set aside, ~9 KB is normal,
+  and nothing the radar asks for once running needs more than 6 KB.
 
 ## v2.0.13
 

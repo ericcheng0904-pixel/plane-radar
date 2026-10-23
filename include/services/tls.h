@@ -76,6 +76,25 @@ bool verifying(Host host);
 void reserveRecordBuffers();
 
 /**
+ * HTTPS and the web pages take turns. A session needs 12-15 KB of heap
+ * besides the reserved buffers and a page being sent ~15 KB more (lwIP's send
+ * buffer and Wi-Fi's copies of its frames): the two at once left ~1 KB free in
+ * a test that loaded pages during fetches, too little for Wi-Fi, and pages
+ * came out cut short. The fetch task holds the turn for each pass of network
+ * work; the main loop serves pages only when it can have it, so a request
+ * waits a moment in the backlog instead.
+ *
+ * Fetch task, before a pass: waits up to 2 s for a page being sent to finish,
+ * then goes ahead anyway (a slow client must not hold the radar's flights up).
+ */
+void beginSessions();
+/** Fetch task, after the pass. */
+void endSessions();
+/** Main loop: whether web pages may be served now. If so, endPages() after. */
+bool beginPages();
+void endPages();
+
+/**
  * Whether a handshake can be afforded right now. Starting one without the
  * room ends in an allocation failure half way through, so the caller skips
  * the request instead.

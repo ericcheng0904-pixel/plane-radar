@@ -331,6 +331,8 @@ void adsbFetchTask(void*) {
   unsigned long interval_ms = config::kAdsbFetchIntervalMs;
   for (;;) {
     services::health::checkFromFetchTask();
+    // Web pages wait while this pass talks to the network (services::tls).
+    services::tls::beginSessions();
     // A town lookup from the settings page takes a pass of its own: one
     // connection at a time, never alongside an aircraft fetch.
     // An update check takes a pass of its own too (and restarts the radar
@@ -356,6 +358,7 @@ void adsbFetchTask(void*) {
         Serial.printf("adsb: all feeds failing, next try in %lu s\n", interval_ms / 1000);
       }
     }
+    services::tls::endSessions();
     // The fetch an update check or a town lookup displaced is due: wait no
     // longer than the usual interval for it. Waiting a whole backoff after
     // such a pass as well put up to ~195 s between fetch attempts, and the
@@ -367,7 +370,8 @@ void adsbFetchTask(void*) {
     // gaps are then ~93 s after a failed fetch, ~75 s after one with routes,
     // and ~143 s with an update check (~40 s) or a town search taking the
     // next pass: well under 180 s. Even a DNS server taking its full 15 s
-    // for every name keeps the worst inside it (~173 s).
+    // for every name keeps the worst inside it (~173 s), and so does a web
+    // page being sent as both passes begin (2 s each, ~177 s).
     // Woken early by a lookup request or a newly saved location.
     services::geocode::idle(looked_up ? std::min(interval_ms, config::kAdsbFetchIntervalMs)
                                       : interval_ms);

@@ -4,6 +4,7 @@
 #include <HTTPClient.h>
 #include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <mbedtls/platform.h>
 #include <mbedtls/ssl.h>
 #include <mbedtls/ssl_internal.h>
@@ -44,13 +45,13 @@ constexpr size_t kMinFreeHeap = 48 * 1024;
 /**
  * With both buffers reserved, the rest of a session takes 12-15 KB (the
  * handshake's working memory, the server's certificates, the TLS client's
- * state and HTTPClient's; no mbedTLS block over 2.3 KB), and Wi-Fi needs
- * ~10 KB beside it for the frames coming in (util::heap_room::kReserve). In
- * fault tests a session begun with 24.5 KB free left ~8 KB and its connection
- * timed out; begun with 26-31 KB, every one went through. The largest block
- * is the health check's low-memory limit: a radar below it restarts anyway.
+ * state and HTTPClient's), and Wi-Fi needs ~10 KB beside it for the frames
+ * coming in (util::heap_room::kReserve). In fault tests a session begun with
+ * 24.5 KB free left ~8 KB and its connection timed out; begun with 26-31 KB,
+ * every one went through. Its largest blocks are the TLS client's state
+ * (2.2 KB) and one of mbedTLS's (2.3 KB), beside Wi-Fi's 1.6 KB frames.
  */
-constexpr size_t kReservedMinLargestBlock = 8 * 1024;
+constexpr size_t kReservedMinLargestBlock = 4 * 1024;
 constexpr size_t kReservedMinFreeHeap = 28 * 1024;
 
 /**
@@ -169,6 +170,21 @@ void reserveIfWanted() {
 
 size_t indexOf(Host host) { return static_cast<size_t>(host); }
 
+/** HTTPS and the web pages take turns (beginSessions()). */
+SemaphoreHandle_t turn() {
+  static StaticSemaphore_t buffer;
+  static const SemaphoreHandle_t handle = xSemaphoreCreateMutexStatic(&buffer);
+  return handle;
+}
+/** The fetch task has the turn. Fetch task only. */
+bool s_sessions_have_turn = false;
+/**
+ * A page takes ~0.3 s. Each pass may wait this long, and a fetch can follow
+ * two passes: see the gaps adsbFetchTask() keeps under the health check's
+ * 180 s.
+ */
+constexpr TickType_t kPageWait = pdMS_TO_TICKS(2000);
+
 }  // namespace
 
 void configure(WiFiClientSecure& client, Host host, uint32_t read_timeout_ms) {
@@ -242,6 +258,21 @@ uint8_t noRoomInARow() { return s_no_room; }
 bool verifying(Host host) { return s_verify[indexOf(host)]; }
 
 void reserveRecordBuffers() { s_reserve_wanted = true; }
+
+void beginSessions() {
+  s_sessions_have_turn = xSemaphoreTake(turn(), kPageWait) == pdTRUE;
+}
+
+void endSessions() {
+  if (s_sessions_have_turn) {
+    s_sessions_have_turn = false;
+    xSemaphoreGive(turn());
+  }
+}
+
+bool beginPages() { return xSemaphoreTake(turn(), 0) == pdTRUE; }
+
+void endPages() { xSemaphoreGive(turn()); }
 
 bool enoughMemory() {
   portENTER_CRITICAL(&s_slots_lock);
