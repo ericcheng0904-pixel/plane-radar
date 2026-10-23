@@ -40,13 +40,15 @@ struct Limits {
   unsigned long wifi_settle_ms = 120000;    // Wi-Fi must be up this long first
   size_t low_memory_block = 8 * 1024;
   /**
-   * HTTPS attempts in a row that found no room for mbedTLS's two 16.7 KB
-   * record buffers. Free memory can be plentiful but cut into pieces too
-   * small for them, and each failed try leaves a closed connection in the
-   * heap for two minutes that keeps it cut; a restart puts it back together.
-   * A flight fetch not sent for want of room for a handshake counts too,
-   * and so does a flight feed's answer with no room left to read one
-   * aircraft of it (NoRoomRun).
+   * HTTPS attempts in a row that found no room for a session. mbedTLS's two
+   * 16.7 KB record buffers are reserved at boot (services::tls), so this is
+   * the ~28 KB the rest of a session and Wi-Fi need beside it, or, if the
+   * reserve did not fit, the buffers themselves: free memory can be
+   * plentiful but cut into pieces too small for them, and each failed try
+   * leaves a closed connection in the heap for two minutes that keeps it
+   * cut; a restart puts it back together. A flight fetch not sent for want
+   * of room for a handshake counts too, and so does a flight feed's answer
+   * with no room left to read one aircraft of it (NoRoomRun).
    */
   uint8_t tls_no_room = 3;
   unsigned long low_memory_ms = 60000;

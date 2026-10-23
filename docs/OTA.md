@@ -114,7 +114,7 @@ cross-signed by `ISRG Root X1`). X1 is in the bundle the firmware embeds
 | `size` | integer | Exact byte length of the image; `1 ..= 0x1C0000`. |
 | `sha256` | string | 64 lowercase hex digits: SHA-256 of the image. |
 | `sig` | string | Base64 of an ASN.1 DER ECDSA signature (≤ 72 bytes) over SHA-256 of the image. |
-| `min_free_heap_hint` | integer | Free heap (bytes) to have before starting: a TLS handshake (48 KB in `services::tls`) plus `Update`'s 4 KB sector buffer and margin. The device uses the larger of this and its own minimum. |
+| `min_free_heap_hint` | integer | Free heap (bytes) to have before starting: a TLS handshake (48 KB in `services::tls` when its record buffers are not reserved) plus `Update`'s 4 KB sector buffer and margin. The device uses the larger of this and its own minimum. |
 | `notes` | string | One line, ≤ 200 characters, for the settings page. Display only. |
 
 Unknown fields are ignored. Anything missing or of the wrong type means "no
@@ -172,8 +172,8 @@ framework's `sdkconfig.h`. The all-zero placeholder fails
 
 Everything below runs on the **fetch task** (`adsbFetchTask` in
 `src/main.cpp`), in place of an ADS-B fetch, never on the main loop, and with
-**no other TLS connection open**: a handshake needs ~45 KB and the C3 has room
-for one.
+**no other TLS connection open**: a handshake needs ~45 KB (33 KB of it the
+record buffers reserved at boot) and the C3 has room for one.
 
 **When.** 2–5 minutes after every boot (random, so a fleet does not arrive
 at once), then once a day; the daily restart makes that once a day anyway.
@@ -215,7 +215,7 @@ certificate chain on GitHub's side, and the signature, the version marker and
    `"PlaneRadar/<version> (+https://github.com/ericcheng0904-pixel/plane-radar)"`,
    carrying the last `len - 1` bytes over between chunks. Abort on a read
    timeout, a short read, more bytes than `size`, or any `Update` error.
-7. **Close the connection** before verifying, to give its ~45 KB back.
+7. **Close the connection** before verifying, to give its memory back.
 8. **Verify, in this order:** exactly `size` bytes written and
    `Update.isFinished()`; the SHA-256 equals `sha256` (a mismatch means a
    corrupted download; retry later); `signatureValid(digest, sig)`; the marker
@@ -303,11 +303,14 @@ means the next image has to go on over USB.
 
 ## Memory and time
 
-- Steady free heap is ~81 KB with a largest block of ~35–39 KB; the TLS
-  handshake takes ~45 KB, `Update` 4 KB plus 16 bytes, SHA-256 a few hundred
-  bytes, the signature check a few KB after the connection is closed. The heap
-  hint and `services::tls::enoughMemory()` keep a fragmented heap from failing
-  half way: skip and retry later.
+- Steady free heap is ~45 KB with a largest block of ~12 KB, beside the 33 KB
+  reserved at boot for mbedTLS's two record buffers (since v2.0.14; before,
+  ~81 KB with a largest block of ~35–39 KB). The update gets the frame
+  buffer's 57.6 KB on top. The TLS handshake takes the reserved buffers and
+  12–15 KB more, `Update` 4 KB plus 16 bytes, SHA-256 a few hundred bytes, the
+  signature check a few KB after the connection is closed. The heap hint and
+  `services::tls::enoughMemory()` keep a fragmented heap from failing half
+  way: skip and retry later.
 - A ~1.5 MB download takes roughly 15–60 s. Flash erases (64 KB blocks) stall
   the single core's cache for tens to hundreds of milliseconds each, so the
   display stutters during the download, and the fetch task delivers no ADS-B

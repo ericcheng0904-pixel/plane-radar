@@ -42,12 +42,16 @@ constexpr unsigned long kHandshakeTimeoutS = 12;
 constexpr size_t kMinLargestBlock = 20 * 1024;
 constexpr size_t kMinFreeHeap = 48 * 1024;
 /**
- * With both buffers reserved, the rest of a session: the handshake's working
- * memory, the server's certificates, the TLS client's state and HTTPClient's,
- * ~12 KB (fault tests), none of it in a block over ~3 KB.
+ * With both buffers reserved, the rest of a session takes 12-15 KB (the
+ * handshake's working memory, the server's certificates, the TLS client's
+ * state and HTTPClient's; no mbedTLS block over 2.3 KB), and Wi-Fi needs
+ * ~10 KB beside it for the frames coming in (util::heap_room::kReserve). In
+ * fault tests a session begun with 24.5 KB free left ~8 KB and its connection
+ * timed out; begun with 26-31 KB, every one went through. The largest block
+ * is the health check's low-memory limit: a radar below it restarts anyway.
  */
-constexpr size_t kReservedMinLargestBlock = 6 * 1024;
-constexpr size_t kReservedMinFreeHeap = 16 * 1024;
+constexpr size_t kReservedMinLargestBlock = 8 * 1024;
+constexpr size_t kReservedMinFreeHeap = 28 * 1024;
 
 /**
  * mbedTLS's record buffers, one each way, asked for as calloc(1, n) by every
@@ -59,11 +63,13 @@ constexpr size_t kRecordBytes = MBEDTLS_SSL_IN_BUFFER_LEN;
 static_assert(MBEDTLS_SSL_OUT_BUFFER_LEN == kRecordBytes,
               "one slot size for both record buffers");
 /**
- * Heap to leave free after reserving them. The radar has ~47 KB with them
+ * Heap to leave free after reserving them. The radar has ~45 KB with them
  * taken; with less it is short already, and a reserve would only move the
- * shortage. It waits for a later session instead.
+ * shortage. It waits for a later session instead. Above kReservedMinFreeHeap,
+ * or a reserve could leave the radar skipping every request.
  */
 constexpr size_t kLeftAfterReserve = 32 * 1024;
+static_assert(kLeftAfterReserve > kReservedMinFreeHeap, "room for a session after the reserve");
 
 /**
  * Kept per server: a success with one says nothing about another's
