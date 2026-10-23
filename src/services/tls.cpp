@@ -179,11 +179,16 @@ SemaphoreHandle_t turn() {
 /** The fetch task has the turn. Fetch task only. */
 bool s_sessions_have_turn = false;
 /**
- * A page takes ~0.3 s. Each pass may wait this long, and a fetch can follow
- * two passes: see the gaps adsbFetchTask() keeps under the health check's
- * 180 s.
+ * A page takes ~0.3 s to hand over, and its last ~11 KB (lwIP's send buffer
+ * and Wi-Fi's copies of the frames) are given back only as the phone
+ * acknowledges them. Each pass may wait this long for both, and a fetch can
+ * follow two passes: see the gaps adsbFetchTask() keeps under the health
+ * check's 180 s.
  */
-constexpr TickType_t kPageWait = pdMS_TO_TICKS(2000);
+constexpr unsigned long kPageWaitMs = 1500;
+constexpr unsigned long kDrainWaitMs = 1000;
+/** Free heap at which a page's send buffers are taken to be back. */
+constexpr size_t kDrainedFreeHeap = kReservedMinFreeHeap + 8 * 1024;
 
 }  // namespace
 
@@ -260,7 +265,16 @@ bool verifying(Host host) { return s_verify[indexOf(host)]; }
 void reserveRecordBuffers() { s_reserve_wanted = true; }
 
 void beginSessions() {
-  s_sessions_have_turn = xSemaphoreTake(turn(), kPageWait) == pdTRUE;
+  s_sessions_have_turn = xSemaphoreTake(turn(), pdMS_TO_TICKS(kPageWaitMs)) == pdTRUE;
+  if (!s_sessions_have_turn) {
+    Serial.printf("tls: a web page held the network for %lu s - going ahead (free %u)\n",
+                  kPageWaitMs / 1000, static_cast<unsigned>(ESP.getFreeHeap()));
+    return;
+  }
+  const unsigned long since = millis();
+  while (ESP.getFreeHeap() < kDrainedFreeHeap && millis() - since < kDrainWaitMs) {
+    delay(50);
+  }
 }
 
 void endSessions() {

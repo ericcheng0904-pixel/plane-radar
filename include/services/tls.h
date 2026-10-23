@@ -84,8 +84,9 @@ void reserveRecordBuffers();
  * work; the main loop serves pages only when it can have it, so a request
  * waits a moment in the backlog instead.
  *
- * Fetch task, before a pass: waits up to 2 s for a page being sent to finish,
- * then goes ahead anyway (a slow client must not hold the radar's flights up).
+ * Fetch task, before a pass: waits up to 1.5 s for a page being sent to
+ * finish, then goes ahead anyway (a slow client must not hold the radar's
+ * flights up), and up to 1 s more for the page's send buffers to come back.
  */
 void beginSessions();
 /** Fetch task, after the pass. */

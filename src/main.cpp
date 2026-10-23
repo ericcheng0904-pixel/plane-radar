@@ -371,7 +371,7 @@ void adsbFetchTask(void*) {
     // and ~143 s with an update check (~40 s) or a town search taking the
     // next pass: well under 180 s. Even a DNS server taking its full 15 s
     // for every name keeps the worst inside it (~173 s), and so does a web
-    // page being sent as both passes begin (2 s each, ~177 s).
+    // page being sent as both passes begin (2.5 s each, ~178 s).
     // Woken early by a lookup request or a newly saved location.
     services::geocode::idle(looked_up ? std::min(interval_ms, config::kAdsbFetchIntervalMs)
                                       : interval_ms);
