@@ -3,6 +3,34 @@
 Releases are installed over the air by radars running an earlier release
 (docs/OTA.md). Newest first.
 
+## v2.0.13
+
+- A radar can have a name (Settings, Display: "Name of this radar", optional,
+  up to 32 plain characters; a phone's curly quotes are fine).
+- New owners are welcomed. The setup page on the phone says in one line what
+  the radar is. The first time the radar is on Wi-Fi with a location, the
+  screen says "Welcome to" its name (or "your Plane Radar") and shows a QR
+  code for a short guide; a tap on the button skips it, and it goes by
+  itself after 3 minutes. Radars updating from an earlier version show it once
+  too.
+- The guide is a new page, `/guide` (**Guide** in the menu): what the radar
+  is, how to read the screen, the button, and what to do when something looks
+  wrong. Settings points at it until it has been opened once.
+- Reset for a new owner: "Keep the location" now keeps the radar's name too.
+  Do it last: the welcome shows once, to whoever sets the radar up next.
+- Fix: opening the settings page could restart the radar ("A stack overflow
+  in task loopTask", then "last restart: crash"). The page was built in large
+  text buffers on the main loop's 8 KB stack, and with this release's
+  additions a request needed about 8.5 KB. Pages are now written straight
+  into one small buffer borrowed for the request, and the settings page now
+  needs about 3 KB. A build check (`scripts/check_stack_usage.py`) now fails on
+  any function with an oversized stack frame, and the serial log reports the
+  main loop's spare stack ("loop stack left").
+- Pages load faster. The settings page took about 5 seconds: it went out in
+  some sixty small pieces, and the radar waited on the network for every few
+  of them. It now goes out in six full-size ones. The pages' text is
+  unchanged.
+
 ## v2.0.12
 
 - Release used to test v2.0.11's updater end to end (no change).

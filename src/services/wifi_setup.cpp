@@ -19,9 +19,11 @@
 #include "services/device_health.h"
 #include "services/portal_pages.h"
 #include "services/radar_location.h"
+#include "services/welcome.h"
 #include "ui/radar_range.h"
 #include "ui/status_screens.h"
 #include "util/hold_detector.h"
+#include "util/portal_input.h"
 #include "util/setup_text.h"
 
 portMUX_TYPE s_boot_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -269,18 +271,23 @@ void resetWifiCredentials() {
 }
 
 /**
- * Reset for a new owner (settings page, confirmed): location, display
- * settings and Wi-Fi all go, and the radar restarts at setup step 1.
+ * Reset for a new owner (settings page, confirmed): location, name, display
+ * settings and Wi-Fi all go, and the radar restarts at setup step 1. The
+ * welcome is due again with them: its record is erased too.
  */
 [[noreturn]] void factoryReset(bool keep_location) {
-  // What to put back afterwards, if the giver chose to keep the location.
+  // What to put back afterwards, if the giver chose to keep the location
+  // (and with it the radar's name, which the welcome greets the next owner by).
   const bool keep = keep_location && services::location::isSet();
   const double lat = services::location::lat();
   const double lon = services::location::lon();
   char place[48];
   snprintf(place, sizeof(place), "%s", services::location::label());
+  char name[util::portal::kMaxRadarName + 1];
+  snprintf(name, sizeof(name), "%s", services::welcome::name());
 
   services::location::clear();
+  services::welcome::clear();
   ui::radar::unitsReset();
   eraseWifiCredentials();
   // Then all of the settings storage: display settings, update records, and
@@ -291,10 +298,11 @@ void resetWifiCredentials() {
   nvs_flash_init();
   if (keep) {
     services::location::save(lat, lon, place);
+    services::welcome::saveName(name);
   }
   markForceConfigPortal();
   Serial.printf("Reset for a new owner: settings and Wi-Fi erased%s\n",
-                keep ? ", location kept" : "");
+                keep ? ", location and name kept" : "");
   statusScreenErased();
   delay(1500);
   esp_restart();
@@ -717,7 +725,10 @@ bool openConfigPortal(const char* retry_ssid = nullptr, bool password_suspect = 
   PortalScreen screen(retry_ssid, password_suspect);
   screen.draw();  // before the hotspot: starting it takes a second or two
   s_join.pending = false;
-  s_wm.setCustomHeadElement(services::portal::hotspotHeadHtml(services::location::isSet()));
+  // A new owner (the welcome still to come) is greeted on the phone too; an
+  // owner who is only changing networks is not.
+  s_wm.setCustomHeadElement(services::portal::hotspotHeadHtml(
+      services::location::isSet(), services::welcome::due(), services::welcome::name()));
   s_wm.setConfigPortalBlocking(false);
   s_wm.startConfigPortal(config::kPortalApName, wifiSetupApPassword());
   unsigned long quiet_since = millis();

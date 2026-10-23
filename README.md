@@ -25,16 +25,28 @@ into a USB charger, then set it up once from your phone. It takes a few minutes.
 
 **Step 1 of 2: join the radar's Wi-Fi and pick yours.** The screen shows a QR
 code. Scan it with the phone's camera. This joins the radar's own setup Wi-Fi,
-`PlaneRadar-Setup`. A page opens. If it does not, open `http://192.168.4.1`.
-Pick your home Wi-Fi, type its password, tap **Save**. Only 2.4 GHz networks
-work; the radar cannot use 5 GHz. No camera? Tap the button on the radar. It
-shows the network name and its password in words.
+`PlaneRadar-Setup`. A page opens and says what the radar is (by its name, if
+it was given one). If it does not open, open `http://192.168.4.1`. Pick your
+home Wi-Fi, type its password, tap **Save**. Only 2.4 GHz networks work; the
+radar cannot use 5 GHz. No camera? Tap the button on the radar. It shows the
+network name and its password in words.
+
+If whoever gave it to you kept its location, the screen says **Wi-Fi setup**
+instead of *Step 1 of 2*, and this is the only step.
 
 **Step 2 of 2: tell it where you live.** Put the phone back on your home Wi-Fi.
 Scan the next QR code on the radar's screen. (Or open the address the screen
 shows, which ends in `/settings`. `http://plane-radar.local` works too.) Type a
 town or ZIP code, paste coordinates from a map app, or type latitude and
-longitude. Tap **Save location**. The planes appear.
+longitude. Tap **Save location**.
+
+**Then it says welcome.** The first time it is on your Wi-Fi and knows where it
+is, the screen says *Welcome to* its name (or *your Plane Radar*) and shows a QR
+code for a short guide: what is on the screen, what the button does, and
+what to do if something looks wrong. Scan it with the phone on your home Wi-Fi.
+A tap on the button skips it, and it goes by itself after 3 minutes. Then the
+planes appear. The guide stays at `http://plane-radar.local/guide` (**Guide**
+in the menu of every page).
 
 ### The button
 
@@ -42,7 +54,7 @@ The button is marked **BOOT**.
 
 | What you do | What happens |
 |-------------|--------------|
-| **Tap** | Changes the range: 5, 10, 15, 25 km, then round again. |
+| **Tap** | Changes the range: 5, 10, 15, 25 km, then round again. On the welcome screen, skips it. |
 | **Hold 2 to 9 seconds, then let go** | While the radar is showing, shows an info screen: a QR code and the address of the settings page, the version, and whether flight data is arriving. A tap closes it. |
 | **Hold 10 seconds** | The radar forgets its Wi-Fi and goes back to step 1. Your location and settings are kept. A countdown shows from 2 seconds; let go before it ends and nothing is forgotten. |
 
@@ -76,7 +88,13 @@ the old one by itself. You do not need to do anything. The **Settings** page
 shows the version and has a **Check for an update now** button.
 
 To give the radar to someone else, open **Settings** and tap **Reset for a new
-owner**. It asks again, then erases the location, the settings and the Wi-Fi.
+owner**. It asks again, then erases the location, the name, the settings and
+the Wi-Fi. Tick **Keep the location and the radar's name** if it stays in the
+area: the next person then only joins it to their Wi-Fi. Give it a name first
+if you like (**Settings**, *Name of this radar*): the setup page, the welcome
+screen and the guide greet them by it, as in "Welcome to Ada's radar". Reset it
+last: the welcome shows once, to whoever sets the radar up next. If you try it
+out yourself afterwards, reset it again before you give it away.
 
 ---
 
@@ -121,7 +139,7 @@ Built on top of the fork above, and checked on a real radar through the
 | ⚡ | **~60% less drawing work** — a frame took 141 ms (runways re-tested all 1,706 entries every frame, water shore was found pixel by pixel); now ~55 ms, which also means less heat. |
 | 🧭 | **Origin and destination** — tags read flight number / route (`ORD-LAF`) / altitude, the card adds "SNA → DTW" (always IATA codes). From adsb.im's route API (it checks each route against the aircraft's position; implausible ones are not shown), at most one batch of 8 flights every 20 s, answers cached for hours. It starts on plain HTTP and follows a redirect to HTTPS by itself. Multi-stop flight numbers ("ORD-CHS-ORD") are cut to the leg being flown when the aircraft is clearly landing at or leaving a stop. With no trusted route, an airline flight (not a helicopter or light aircraft) low near a major airport and clearly descending toward it or climbing away gets one end: "→ ORD" / "ORD →" (util::airport_guess: below 10,000 ft, within 35 km, plausible height for the distance, track within 30°, nearest airport clearly nearest). |
 | 🛟 | **Self-repair for unattended use** — restarts itself if the display loop stalls, fetching stops, no data arrives for 30 min, memory stays low or HTTPS keeps finding no room, and once a day; the reason is shown on the settings page. A saved Wi-Fi that is out of reach at power-up (router still starting) is retried every 3 min instead of leaving the radar in setup mode. "No flight data" appears on screen when it applies. |
-| 📱 | **Guided setup from a phone** — two steps on the round screen, each with a QR code: join the setup hotspot and pick the home Wi-Fi (tried before it is kept; a wrong password or a 5 GHz-only network is named on screen), then open the settings page and give a town, ZIP code, pasted coordinates or a map link. "Wi-Fi lost" after 25 s, a restart into the hotspot path after 10 min, and **Reset for a new owner**. See [If you were given one](#if-you-were-given-one). |
+| 📱 | **Guided setup from a phone** — two steps on the round screen, each with a QR code: join the setup hotspot and pick the home Wi-Fi (tried before it is kept; a wrong password or a 5 GHz-only network is named on screen), then open the settings page and give a town, ZIP code, pasted coordinates or a map link. "Wi-Fi lost" after 25 s, a restart into the hotspot path after 10 min, and **Reset for a new owner**. Afterwards a one-time welcome screen, by the radar's name if it has one, offers a short guide (`/guide`). See [If you were given one](#if-you-were-given-one). |
 | ℹ️ | **Info screen** — hold the button 2–9 s and let go: a QR code and the address of the settings page, the version and the data status. Holding 10 s forgets only the Wi-Fi. |
 | 🔐 | **Signed over-the-air updates** — the flash has two 1.75 MB app slots. About once a day (and a few minutes after power-up) the radar looks for a release on GitHub Pages and installs it only if it is newer and its signature checks out against the key built into the firmware. The new image runs on trial and is kept only after it has joined Wi-Fi, drawn the radar, fetched aircraft and run for 15 minutes; otherwise the radar goes back to the old one by itself. Wi-Fi, location, settings and the logo pack are kept. See [docs/OTA.md](docs/OTA.md) and [docs/RELEASING.md](docs/RELEASING.md). |
 | 🧰 | **Browser installer** — new and repaired radars can be flashed from a web page served from GitHub Pages (`site/`). See [Build and flash](#build-and-flash). |
@@ -227,18 +245,20 @@ the repository.
 ## Settings reference
 
 Everything below is on the **Settings** page at **`http://plane-radar.local`**
-and is remembered across reboots. Four pages share one navigation bar:
+and is remembered across reboots. Five pages share one navigation bar:
 
 | Page | What is on it |
 |------|---------------|
 | **Home** | Where you land; links to the rest |
 | **Wi-Fi** | Which network the radar is on, and how to move it to another (hold the button 10 s) |
 | **Settings** | Location, display, alerts, network & power — grouped; version and updates; **Reset for a new owner** at the bottom |
+| **Guide** | What the radar is and how to read it, a short read for whoever was given one (`/guide`). Until it has been opened once, **Settings** points at it at the top |
 | **System** | Chip details, memory, uptime, **temperature** |
 
 | Setting | What it does |
 |---------|--------------|
 | **Location** | Where the radar is centred, and the position it asks the ADS-B service about: a town or ZIP code (the radar looks it up itself with Open-Meteo's geocoding; a ZIP code finds the middle of its town), pasted coordinates (`41.88, -87.63`, Apple Maps' `41.88° N, 87.63° W`, or a Google Maps link), or exact latitude/longitude. Its own form and **Save location** button; fields left empty change nothing |
+| **Name of this radar** | Optional, up to 32 plain characters (no accents or emoji: the screen's font has none; a phone's curly quotes and dashes are made plain). The setup page, the welcome screen and the guide greet the owner by it; empty says "your Plane Radar" |
 | **Text size** | `1` normal, `2` small, `3` smallest |
 | **Theme** | Scope, Map, Classic or Sweep |
 | **Distances in miles** | Ring labels in `mi` instead of `km` |
@@ -250,7 +270,7 @@ and is remembered across reboots. Four pages share one navigation bar:
 | **Flash duration** | `Off`, or `3` / `5` / `7` seconds — how long the radar pulses for a noteworthy aircraft |
 | **Wi-Fi transmit power** | `8 dBm` low (default), `13` medium, `19` high — see [Heat and stability](#heat-and-stability) |
 | **Check for an update now** | Looks for a release on the next pass; the result is under *About* |
-| **Reset for a new owner** | Asks again, then erases the location, the settings and the Wi-Fi, and restarts at step 1 |
+| **Reset for a new owner** | Asks again, then erases the location, the name, the settings and the Wi-Fi, and restarts at step 1; with **Keep the location and the radar's name** ticked, at Wi-Fi setup. The welcome screen shows again for whoever sets it up next, so reset last |
 
 Until a location is saved the radar shows nothing but step 2 of the setup — no
 radar centred on a default somewhere else.
@@ -259,7 +279,7 @@ radar centred on a default somewhere else.
 
 One tap (under 1.5 s) cycles the range (5 → 10 → 15 → 25 km) while the radar is
 showing; on a setup or message screen it does not change the range, which could
-not be seen there. On the hotspot screen of step 1 a tap steps between the QR
+not be seen there. On the welcome screen a tap skips the welcome. On the hotspot screen of step 1 a tap steps between the QR
 code and the network name and password in words.
 
 Holding for 2–9 s and letting go shows the info screen while the radar is up
@@ -485,7 +505,7 @@ include/
   hardware/                — display and font plumbing
   data/                    — generated tables (airports, airlines)
   ui/                      — radar drawing, settings, alerts, trails
-  services/                — Wi-Fi portal, ADS-B client, location, updates
+  services/                — Wi-Fi portal, ADS-B client, location, name and welcome, updates
 src/                       — the matching implementations
 data/                      — embedded font files, and the certificate bundle (cert/)
 partitions/                — flash layout: two app slots, and the private logos partition

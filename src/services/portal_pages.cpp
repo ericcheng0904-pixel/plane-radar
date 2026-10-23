@@ -3,10 +3,13 @@
 #include <Arduino.h>
 #include <WiFi.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <sys/socket.h>
 
 #if __has_include(<esp_random.h>)
 #include <esp_random.h>
@@ -20,6 +23,7 @@
 #include "services/geocode.h"
 #include "services/ota.h"
 #include "services/radar_location.h"
+#include "services/welcome.h"
 #include "ui/radar_display.h"
 #include "ui/radar_range.h"
 #include "util/coords.h"
@@ -37,23 +41,192 @@ constexpr char kLocationSavePath[] = "/locationsave";
 constexpr char kResetPath[] = "/reset";
 constexpr char kUpdateCheckPath[] = "/updatecheck";
 constexpr char kScreenPath[] = "/screen.bmp";
+constexpr char kGuidePath[] = "/guide";
+
+/** What the pages call the radar when its owner has not named it. */
+constexpr char kUnnamed[] = "your Plane Radar";
+
+/**
+ * The page on its way out: text is gathered here and sent one TCP segment's
+ * worth at a time, as one chunk of the chunked response.
+ *
+ * Speed. WebServer::sendContent() makes three socket writes (chunk size,
+ * text, CRLF), and with TCP_NODELAY on (WebServer::begin() and
+ * WiFiServer::available() set it on every connection; WiFiManager's server
+ * inherits it) each leaves as a TCP segment of its own. lwIP stops a writer at
+ * 8 segments waiting for an ACK, so the settings page, written in some sixty
+ * pieces, went out as ~190 segments and took about 5 s. Gathered, it is six
+ * full-size chunks, which a phone acknowledges at once. Turning Nagle on
+ * instead would leave the ~190 send calls and lean on lwIP's internals.
+ *
+ * Stack. Everything is formatted (putf) and escaped (putEscaped) straight into
+ * this buffer, never into char arrays on the stack. The handlers run on
+ * loopTask, which has 8 KB; in v2.0.13 the compiler inlined the settings
+ * page's sections into one 3.5 KB frame, the About section's 2.5 KB went under
+ * it and printf under that, and a request overflowed the stack.
+ *
+ * One buffer for all pages: every handler runs on loopTask, one at a time.
+ * WiFiManager::process() (from wifiLoop() and openConfigPortal()) calls
+ * WebServer::handleClient(), which runs one handler and returns. Nothing a
+ * handler calls serves another request: the Hooks only note what the loop is
+ * to do, WiFiManager's callbacks (setAPCallback, setWebServerCallback) only
+ * start mDNS and register routes, and its own pages build their own String
+ * and never come here. Borrowed from the heap for the length of a page, like
+ * /screen.bmp's rows, so between requests it costs nothing: the TLS session
+ * needs the heap's largest block.
+ */
+#ifdef CONFIG_LWIP_TCP_MSS
+constexpr size_t kPageChunk = CONFIG_LWIP_TCP_MSS;
+#else
+constexpr size_t kPageChunk = 1436;  // the radar's CONFIG_LWIP_TCP_MSS
+#endif
+/**
+ * A page still being sent after this is cut off. Each write to a client that
+ * stopped reading can hold the main loop for 10 s (WiFiClient::write: ten
+ * 1 s waits), and a chunk is three writes. Past the budget nothing more of
+ * the page is written, and the connection is shut down so that WebServer's
+ * own writes after the handler (the chunked response's end) fail at once:
+ * the main loop is free well inside the minute after which the health check
+ * restarts a stuck loop.
+ */
+constexpr unsigned long kPageBudgetMs = 10000;
+
+struct PageOut {
+  /** kPageChunk + 1 bytes (vsnprintf's terminator); nullptr between pages. */
+  char* buf;
+  size_t len;
+  unsigned long started_ms;
+  /** Over kPageBudgetMs: the rest of the page is dropped, not written. */
+  bool cut;
+};
+PageOut s_page = {nullptr, 0, 0, false};
+
+/**
+ * Ends the connection under the response. WebServer::client() returns a copy,
+ * and WiFiClient::stop() on a copy only lets go of the copy: the server's own
+ * connection stays open and every later write still waits. shutdown() acts on
+ * the socket itself, so the next write fails, and WiFiClient::write() stops
+ * the server's connection, which makes every write after it return at once.
+ */
+void dropClient(WebServer& server) {
+  const int fd = server.client().fd();
+  if (fd >= 0) {
+    shutdown(fd, SHUT_RDWR);
+  }
+}
+
+/** What is gathered goes out as one chunk; nothing once the page is cut. */
+void flushPage(WebServer& server) {
+  if (s_page.len == 0) {
+    return;
+  }
+  if (!s_page.cut && millis() - s_page.started_ms > kPageBudgetMs) {
+    s_page.cut = true;
+    dropClient(server);
+  }
+  if (!s_page.cut) {
+    server.sendContent(s_page.buf, s_page.len);
+  }
+  s_page.len = 0;
+}
+
+/** `n` bytes of `text` onto the page. Nothing when no page is under way. */
+void put(WebServer& server, const char* text, size_t n) {
+  if (s_page.buf == nullptr) {
+    return;
+  }
+  while (n > 0) {
+    if (s_page.len == kPageChunk) {
+      flushPage(server);
+    }
+    const size_t k = std::min(n, kPageChunk - s_page.len);
+    memcpy(s_page.buf + s_page.len, text, k);
+    s_page.len += k;
+    text += k;
+    n -= k;
+  }
+}
+
+void put(WebServer& server, const char* text) { put(server, text, strlen(text)); }
+
+/** printf onto the page. Each piece must stay under kPageChunk (all are under 1 KB). */
+__attribute__((format(printf, 2, 3))) void putf(WebServer& server, const char* format, ...) {
+  if (s_page.buf == nullptr) {
+    return;
+  }
+  for (int pass = 0; pass < 2; ++pass) {
+    const size_t room = kPageChunk - s_page.len;
+    va_list args;
+    va_start(args, format);
+    const int n = vsnprintf(s_page.buf + s_page.len, room + 1, format, args);
+    va_end(args);
+    if (n < 0) {
+      return;
+    }
+    if (static_cast<size_t>(n) <= room || s_page.len == 0) {
+      s_page.len += std::min(static_cast<size_t>(n), room);
+      return;
+    }
+    // It did not fit after what is there: send that, and format it again
+    // at the start of the empty buffer.
+    flushPage(server);
+  }
+}
+
+/** `text` with & < > " ' as entities, as util::setup::htmlEscape writes it. */
+void putEscaped(WebServer& server, const char* text) {
+  if (text == nullptr) {
+    return;
+  }
+  const char* plain = text;
+  for (const char* p = text; *p != '\0'; ++p) {
+    const char* entity = util::setup::htmlEntity(*p);
+    if (entity != nullptr) {
+      put(server, plain, static_cast<size_t>(p - plain));
+      put(server, entity);
+      plain = p + 1;
+    }
+  }
+  put(server, plain);
+}
+
+/**
+ * On a section sender that has a buffer of its own (an OTA status, a feed
+ * line): kept a function of its own, so its buffer is on the stack only while
+ * it runs. Inlined into the page's handler, GCC gives each inlined section's
+ * locals a slot of their own for the whole page (the exception paths of the
+ * String locals keep them all live), and the frames add up — that was the
+ * 3.5 KB handleSettings of v2.0.13.
+ */
+#define PORTAL_SECTION __attribute__((noinline))
+
+/** The radar's name, escaped; kUnnamed when it has none. */
+void putName(WebServer& server) {
+  const char* name = welcome::name();
+  if (name != nullptr && name[0] != '\0') {
+    putEscaped(server, name);
+  } else {
+    put(server, kUnnamed);
+  }
+}
 
 /**
  * Navigation shown on every portal page. WiFiManager renders each page as a
  * dead end with at most a Back button, which is how the settings ended up
- * hidden; these four links are the whole map of the interface.
+ * hidden; these five links are the whole map of the interface.
  */
 void sendNav(WebServer& server, const char* active) {
-  static const char* const kLinks[][2] = {
-      {"/", "Home"}, {"/wifi", "Wi-Fi"}, {"/settings", "Settings"}, {"/info", "System"}};
-  server.sendContent("<div id='nv'>");
+  static const char* const kLinks[][2] = {{"/", "Home"},
+                                          {"/wifi", "Wi-Fi"},
+                                          {"/settings", "Settings"},
+                                          {"/guide", "Guide"},
+                                          {"/info", "System"}};
+  put(server, "<div id='nv'>");
   for (const auto& link : kLinks) {
-    char buf[80];
-    snprintf(buf, sizeof(buf), "<a%s href='%s'>%s</a>",
-             strcmp(link[0], active) == 0 ? " class='on'" : "", link[0], link[1]);
-    server.sendContent(buf);
+    putf(server, "<a%s href='%s'>%s</a>", strcmp(link[0], active) == 0 ? " class='on'" : "",
+         link[0], link[1]);
   }
-  server.sendContent("</div>");
+  put(server, "</div>");
 }
 
 /** Styles for our own pages: same palette as WiFiManager, nothing loaded. */
@@ -64,9 +237,16 @@ constexpr char kStyleHtml[] =
     "sans-serif;margin:0;padding:16px}"
     ".wrap{max-width:430px;margin:0 auto;text-align:left}"
     "h1{font-size:20px;margin:0 0 14px}"
+    "h2{font-size:18px;margin:4px 0 10px}"
     "p,li{font-size:15px;line-height:1.45}"
-    "#nv{display:flex;gap:5px;margin:0 0 16px}"
-    "#nv a{flex:1;text-align:center;padding:9px 4px;border-radius:8px;"
+    "ul{padding-left:20px;margin:8px 0}"
+    "li{margin:0 0 6px}"
+    // Five links share a phone's width: each takes its word's width plus a
+    // share of what is left (all fit at 320 px), and on anything narrower a
+    // word is cut rather than pushing the page sideways.
+    "#nv{display:flex;gap:4px;margin:0 0 16px}"
+    "#nv a{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;"
+    "white-space:nowrap;text-align:center;padding:9px 4px;border-radius:8px;"
     "background:#f2f2f2;border:1px solid #dcdcdc;color:#444;"
     "text-decoration:none;font-size:14px}"
     "#nv a.on{background:#1fa3ec;border-color:#1fa3ec;color:#fff}"
@@ -91,6 +271,8 @@ constexpr char kStyleHtml[] =
     ".ok{background:#e6f6e6;border:1px solid #bfe3bf;color:#245c24}"
     ".st{background:#fff6e5;border:1px solid #f3d29a;color:#5a3d00}"
     ".er{background:#fdecea;border:1px solid #f5c2bd;color:#8a1f15}"
+    "a.nh{display:block;margin:0 0 14px;padding:10px 12px;border-radius:6px;font-size:15px;"
+    "background:#e8f3fd;border:1px solid #b5d9f5;color:#0b4f8a;text-decoration:none}"
     "</style>";
 
 /**
@@ -123,19 +305,31 @@ bool tokenOk(WebServer& server) {
 }
 
 void sendFormStart(WebServer& server, const char* action) {
-  char buf[128];
-  snprintf(buf, sizeof(buf),
-           "<form method='POST' action='%s'><input type='hidden' name='tok' value='%s'>", action,
-           formToken());
-  server.sendContent(buf);
+  putf(server, "<form method='POST' action='%s'><input type='hidden' name='tok' value='%s'>",
+       action, formToken());
 }
 
 /**
  * Status line, chunked document start, styles and heading. `refresh_s` > 0
  * reloads the page by itself (a lookup under way); `nav` is the active link,
- * or nullptr on the hotspot, where there is nowhere else to go.
+ * or nullptr on the hotspot, where there is nowhere else to go. Every page
+ * that starts here ends with sendPageEnd(), which gives the buffer back.
+ * False when the page could not start (503 sent): the handler's writes are
+ * dropped, and nothing should count as shown.
  */
-void sendPageStart(WebServer& server, const char* title, const char* nav, int refresh_s = 0) {
+bool sendPageStart(WebServer& server, const char* title, const char* nav, int refresh_s = 0) {
+  if (s_page.buf == nullptr) {
+    s_page.buf = static_cast<char*>(malloc(kPageChunk + 1));
+  }
+  if (s_page.buf == nullptr) {
+    // Not even 1.4 KB free: a plain answer, rather than a page that stops
+    // short. Everything the handler goes on to write is dropped.
+    server.send(503, "text/plain", "busy: try again in a moment");
+    return false;
+  }
+  s_page.len = 0;
+  s_page.started_ms = millis();
+  s_page.cut = false;
   // Chunked output: the page never exists in RAM as a whole, so its length is
   // independent of how fragmented the heap is by the time it is requested.
   server.sendHeader("Cache-Control", "no-store");
@@ -144,37 +338,66 @@ void sendPageStart(WebServer& server, const char* title, const char* nav, int re
   server.sendHeader("Content-Security-Policy", "frame-ancestors 'none'");
   server.setContentLength(CONTENT_LENGTH_UNKNOWN);
   server.send(200, "text/html", "");
-  char refresh[64] = "";
+  put(server,
+      "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
+      "<meta name='viewport' content='width=device-width,initial-scale=1'>");
   if (refresh_s > 0) {
-    snprintf(refresh, sizeof(refresh), "<meta http-equiv='refresh' content='%d'>", refresh_s);
+    putf(server, "<meta http-equiv='refresh' content='%d'>", refresh_s);
   }
-  char buf[240];
-  snprintf(buf, sizeof(buf),
-           "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
-           "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-           "%s<title>%s - Plane Radar</title>",
-           refresh, title);
-  server.sendContent(buf);
-  server.sendContent(kStyleHtml);
-  server.sendContent("</head><body><div class='wrap'><h1>Plane Radar</h1>");
+  putf(server, "<title>%s - Plane Radar</title>", title);
+  put(server, kStyleHtml, sizeof(kStyleHtml) - 1);
+  put(server, "</head><body><div class='wrap'><h1>Plane Radar</h1>");
   if (nav != nullptr) {
     sendNav(server, nav);
   }
+  return true;
 }
 
 void sendPageEnd(WebServer& server) {
-  server.sendContent("</div></body></html>");
-  server.sendContent("");
+  if (s_page.buf == nullptr) {
+    return;  // sendPageStart() answered 503: that was the whole reply
+  }
+  put(server, "</div></body></html>");
+  flushPage(server);
+  const bool cut = s_page.cut;
+  free(s_page.buf);
+  s_page = {nullptr, 0, 0, false};
+  if (!cut) {
+    server.sendContent("", 0);  // the chunked response's end
+  }
+}
+
+/**
+ * What follows the name in "Welcome to <name>!": nothing when the name ends in
+ * its own . ! or ? ("Happy birthday!"), which would otherwise read "!!".
+ */
+const char* afterName(const char* name) {
+  const size_t n = name != nullptr ? strlen(name) : 0;
+  return n > 0 && strchr(".!?", name[n - 1]) != nullptr ? "" : "!";
+}
+
+/**
+ * The one line that tells a new owner what this is, before the step they are
+ * on: "Welcome to <name>! It shows the planes flying near you, live." and
+ * `then`. Only while the welcome is still to come: an owner who knows the
+ * radar is not greeted again.
+ */
+void sendWelcomeIntro(WebServer& server, const char* then) {
+  if (!welcome::due()) {
+    return;
+  }
+  put(server, "<p>Welcome to <b>");
+  putName(server);
+  putf(server, "</b>%s It shows the planes flying near you, live. %s</p>",
+       afterName(welcome::name()), then);
 }
 
 void sendCheckbox(WebServer& server, const char* name, const char* label,
                   bool checked) {
-  char buf[220];
-  snprintf(buf, sizeof(buf),
-           "<label class='cb'><input type='checkbox' name='%s' value='T'%s>"
-           "<span>%s</span></label>",
-           name, checked ? " checked" : "", label);
-  server.sendContent(buf);
+  putf(server,
+       "<label class='cb'><input type='checkbox' name='%s' value='T'%s>"
+       "<span>%s</span></label>",
+       name, checked ? " checked" : "", label);
 }
 
 /**
@@ -184,17 +407,12 @@ void sendCheckbox(WebServer& server, const char* name, const char* label,
 void sendChoiceSelect(WebServer& server, const char* name, const char* label,
                       const uint8_t* choices, size_t count, uint8_t current,
                       const char* const* option_labels) {
-  char buf[200];
-  snprintf(buf, sizeof(buf), "<label for='%s'>%s</label><select id='%s' name='%s'>",
-           name, label, name, name);
-  server.sendContent(buf);
+  putf(server, "<label for='%s'>%s</label><select id='%s' name='%s'>", name, label, name, name);
   for (size_t i = 0; i < count; ++i) {
-    snprintf(buf, sizeof(buf), "<option value='%u'%s>%s</option>",
-             static_cast<unsigned>(choices[i]),
-             choices[i] == current ? " selected" : "", option_labels[i]);
-    server.sendContent(buf);
+    putf(server, "<option value='%u'%s>%s</option>", static_cast<unsigned>(choices[i]),
+         choices[i] == current ? " selected" : "", option_labels[i]);
   }
-  server.sendContent("</select>");
+  put(server, "</select>");
 }
 
 /** Whether `s` has anything but spaces in it. */
@@ -208,75 +426,73 @@ bool filled(const String& s) {
 }
 
 /** The outcome of /locationsave, carried to /settings as a code (never the text). */
-void sendLocationNotice(WebServer& server, const String& code) {
-  // Room for the longest escaped text: every character can become "&quot;".
-  char buf[640];
-  char place[location::kMaxLabel * 6 + 1];
-  char asked[util::geocode::kMaxQuery * 6 + 1];
-  util::setup::htmlEscape(location::label(), place, sizeof(place));
+PORTAL_SECTION void sendLocationNotice(WebServer& server, const String& code) {
+  // A new owner's radar says welcome before it shows planes (main.cpp,
+  // showWelcome): say so, or the phone and the screen disagree.
+  const char* next = welcome::due()
+                         ? "The radar says welcome first: scan its code for a short guide, "
+                           "or tap its button. Then the planes appear."
+                         : "The radar shows planes near it now.";
   if (code == "saved") {
-    snprintf(buf, sizeof(buf),
-             "<div class='ok'>Location saved. The radar now shows planes near "
-             "<b>%s</b>.</div>",
-             place);
+    put(server, "<div class='ok'>Location saved: <b>");
+    putEscaped(server, location::label());
+    putf(server, "</b>. %s</div>", next);
   } else if (code == "looking") {
-    char raw[util::geocode::kMaxQuery + 1];
-    geocode::asked(raw, sizeof(raw));
-    util::setup::htmlEscape(raw, asked, sizeof(asked));
+    char asked[util::geocode::kMaxQuery + 1];
+    geocode::asked(asked, sizeof(asked));
     switch (geocode::state()) {
       case geocode::State::kWaiting:
-        snprintf(buf, sizeof(buf), "<div class='st'>Looking up &ldquo;%s&rdquo;&hellip;</div>",
-                 asked);
+        put(server, "<div class='st'>Looking up &ldquo;");
+        putEscaped(server, asked);
+        put(server, "&rdquo;&hellip;</div>");
         break;
       case geocode::State::kFound:
-        snprintf(buf, sizeof(buf),
-                 "<div class='ok'>Found <b>%s</b> (%.4f, %.4f). The radar shows planes "
-                 "near it now. Not the right place? Add the state (Evanston IL) or "
-                 "paste coordinates.</div>",
-                 place, location::lat(), location::lon());
+        put(server, "<div class='ok'>Found <b>");
+        putEscaped(server, location::label());
+        putf(server,
+             "</b> (%.4f, %.4f). %s Not the right place? "
+             "Add the state (Evanston IL) or paste coordinates.</div>",
+             location::lat(), location::lon(), next);
         break;
       case geocode::State::kNotFound:
-        snprintf(buf, sizeof(buf),
-                 "<div class='er'>Could not find &ldquo;%s&rdquo;. Add the state "
-                 "(Evanston IL; for a neighbourhood the state, not the city: "
-                 "Logan Square IL) or the country, or paste coordinates.</div>",
-                 asked);
+        put(server, "<div class='er'>Could not find &ldquo;");
+        putEscaped(server, asked);
+        put(server,
+            "&rdquo;. Add the state "
+            "(Evanston IL; for a neighbourhood the state, not the city: "
+            "Logan Square IL) or the country, or paste coordinates.</div>");
         break;
       case geocode::State::kFailed:
-        snprintf(buf, sizeof(buf),
-                 "<div class='er'>The town search did not answer. Check that the "
-                 "radar's Wi-Fi reaches the internet, or paste coordinates "
-                 "instead.</div>");
+        put(server,
+            "<div class='er'>The town search did not answer. Check that the "
+            "radar's Wi-Fi reaches the internet, or paste coordinates "
+            "instead.</div>");
         break;
       case geocode::State::kIdle:
       default:
-        return;
+        break;
     }
   } else if (code == "badpair") {
-    snprintf(buf, sizeof(buf),
-             "<div class='er'>Could not read those coordinates. Paste two numbers, "
-             "latitude first (41.88, -87.63), or a Google Maps link.</div>");
+    put(server,
+        "<div class='er'>Could not read those coordinates. Paste two numbers, "
+        "latitude first (41.88, -87.63), or a Google Maps link.</div>");
   } else if (code == "badll") {
-    snprintf(buf, sizeof(buf),
-             "<div class='er'>Fill in both latitude and longitude as decimal numbers, "
-             "negative for south and west.</div>");
+    put(server,
+        "<div class='er'>Fill in both latitude and longitude as decimal numbers, "
+        "negative for south and west.</div>");
   } else if (code == "badtown") {
-    snprintf(buf, sizeof(buf),
-             "<div class='er'>Type a town name, or a five-digit ZIP code.</div>");
+    put(server, "<div class='er'>Type a town name, or a five-digit ZIP code.</div>");
   } else if (code == "busy") {
-    snprintf(buf, sizeof(buf),
-             "<div class='er'>Still looking up the last one; try again in a few "
-             "seconds.</div>");
+    put(server,
+        "<div class='er'>Still looking up the last one; try again in a few "
+        "seconds.</div>");
   } else if (code == "empty") {
-    snprintf(buf, sizeof(buf),
-             "<div class='er'>Nothing entered: type a town or ZIP code, or paste "
-             "coordinates.</div>");
+    put(server,
+        "<div class='er'>Nothing entered: type a town or ZIP code, or paste "
+        "coordinates.</div>");
   } else if (code == "same") {
-    snprintf(buf, sizeof(buf), "<div class='ok'>Location unchanged.</div>");
-  } else {
-    return;
+    put(server, "<div class='ok'>Location unchanged.</div>");
   }
-  server.sendContent(buf);
 }
 
 /**
@@ -286,22 +502,17 @@ void sendLocationNotice(WebServer& server, const String& code) {
  * quietly moved to Amsterdam.
  */
 void sendLocationSection(WebServer& server) {
-  char buf[480];
   const bool set = location::isSet();
-  server.sendContent("<div class='sc'>Location</div>");
+  put(server, "<div class='sc'>Location</div>");
   if (set) {
-    char place[location::kMaxLabel * 6 + 1];
-    util::setup::htmlEscape(location::label(), place, sizeof(place));
     // Set already: say where, and keep the form folded away, so the page
     // does not read as a request to type coordinates.
-    snprintf(buf, sizeof(buf),
-             "<div class='hn'>Showing planes near <b>%s</b>.</div>"
-             "<details><summary>Change the location</summary>",
-             place);
-    server.sendContent(buf);
+    put(server, "<div class='hn'>Showing planes near <b>");
+    putEscaped(server, location::label());
+    put(server, "</b>.</div><details><summary>Change the location</summary>");
   }
   sendFormStart(server, kLocationSavePath);
-  server.sendContent(
+  put(server,
       "<label for='town'>Town or ZIP code</label>"
       "<input id='town' name='town' type='text' maxlength='64' "
       "placeholder='Evanston IL or 60201' autocomplete='off'>"
@@ -320,38 +531,46 @@ void sendLocationSection(WebServer& server) {
       "<div class='hn'>Decimal degrees, negative for south and west.</div>");
   // Empty while nothing is stored: a pre-filled default would be saved back
   // by anyone who pressed Save without reading it.
-  char value[24] = "";
+  put(server,
+      "<label for='lat'>Latitude</label>"
+      "<input id='lat' name='lat' type='number' step='0.000001' "
+      "min='-90' max='90' value='");
   if (set) {
-    snprintf(value, sizeof(value), "%.6f", location::lat());
+    putf(server, "%.6f", location::lat());
   }
-  snprintf(buf, sizeof(buf),
-           "<label for='lat'>Latitude</label>"
-           "<input id='lat' name='lat' type='number' step='0.000001' "
-           "min='-90' max='90' value='%s'>",
-           value);
-  server.sendContent(buf);
-  value[0] = '\0';
+  put(server,
+      "'><label for='lon'>Longitude</label>"
+      "<input id='lon' name='lon' type='number' step='0.000001' "
+      "min='-180' max='180' value='");
   if (set) {
-    snprintf(value, sizeof(value), "%.6f", location::lon());
+    putf(server, "%.6f", location::lon());
   }
-  snprintf(buf, sizeof(buf),
-           "<label for='lon'>Longitude</label>"
-           "<input id='lon' name='lon' type='number' step='0.000001' "
-           "min='-180' max='180' value='%s'>",
-           value);
-  server.sendContent(buf);
-  server.sendContent(
-      "</details><button type='submit'>Save location</button></form>"
+  put(server,
+      "'></details><button type='submit'>Save location</button></form>"
       "<div class='hn'>The lake and shoreline layer covers the Chicago area only; "
       "elsewhere the radar simply shows no water.</div>");
   if (set) {
-    server.sendContent("</details>");
+    put(server, "</details>");
   }
 }
 
 void sendDisplaySections(WebServer& server) {
   sendFormStart(server, kSavePath);
-  server.sendContent("<div class='sc'>Display</div>");
+  put(server, "<div class='sc'>Display</div>");
+  // No pattern= here: a name the save refuses (util::portal::radarName,
+  // which makes a phone's curly quotes plain first) is said on the page,
+  // and the rest of this form is still saved.
+  putf(server,
+       "<label for='rname'>Name of this radar (optional)</label>"
+       "<input id='rname' name='rname' type='text' maxlength='%u' value='",
+       static_cast<unsigned>(util::portal::kMaxRadarName));
+  putEscaped(server, welcome::name());
+  putf(server,
+       "' placeholder='Ada&#39;s radar' autocomplete='off'>"
+       "<div class='hn'>Read as &ldquo;Welcome to Ada&#39;s radar&rdquo; on the "
+       "setup page, the welcome screen and the guide. Empty: &ldquo;Welcome to "
+       "%s&rdquo;. Plain letters, no accents or emoji.</div>",
+       kUnnamed);
   {
     static const uint8_t kFontChoices[] = {1, 2, 3};
     static const char* const kFontLabels[] = {"1 - normal", "2 - small",
@@ -384,7 +603,7 @@ void sendDisplaySections(WebServer& server) {
   sendCheckbox(server, "night", "Dim the screen at night (dusk to dawn where the radar is)",
                ui::radar::dimAtNight());
 
-  server.sendContent(
+  put(server,
       "<div class='sc'>Alerts</div>"
       "<div class='hn'>The radar pulses a coloured ring when an emergency, a "
       "military aircraft or a rare type first appears.</div>");
@@ -397,7 +616,7 @@ void sendDisplaySections(WebServer& server) {
                      ui::radar::alertSeconds(), kAlertLabels);
   }
 
-  server.sendContent(
+  put(server,
       "<div class='sc'>Network</div>"
       "<div class='hn'>Raise the transmit power if the connection drops in a "
       "weak spot; it costs current, and therefore heat.</div>");
@@ -409,50 +628,42 @@ void sendDisplaySections(WebServer& server) {
                      ui::radar::txPowerDbm(), kTxLabels);
   }
 
-  server.sendContent(
+  put(server,
       "<button type='submit'>Save</button></form>"
       "<div class='hn'>Saved settings survive a restart. Hold the button on the "
       "radar for ten seconds to clear the saved Wi-Fi; location and these "
       "settings are kept.</div>");
 }
 
-void sendStatusLine(WebServer& server) {
+PORTAL_SECTION void sendStatusLine(WebServer& server) {
   // Status in words, for whoever is looking after the radar.
   const unsigned long last = services::adsb::lastUpdateMs();
   const unsigned long up_min = millis() / 60000;
-  char data[128];
+  put(server, "<div class='hn'>Status: ");
   if (last == 0) {
-    snprintf(data, sizeof(data), "no flight data yet (trying %s)",
-             services::adsb::feedName());
+    putf(server, "no flight data yet (trying %s)", services::adsb::feedName());
   } else {
     // The feed being asked can differ from the one the data came from
     // around a failover; name both then.
     const char* from = services::adsb::dataFeedName();
     const char* next = services::adsb::feedName();
-    char trying[32] = "";
+    putf(server, "flight data from %s %lu s ago%s", from, (millis() - last) / 1000,
+         services::adsb::dataVerified() ? "" : " (certificate not checked)");
     if (strcmp(from, next) != 0) {
-      snprintf(trying, sizeof(trying), ", now trying %s", next);
+      putf(server, ", now trying %s", next);
     }
-    snprintf(data, sizeof(data), "flight data from %s %lu s ago%s%s", from,
-             (millis() - last) / 1000,
-             services::adsb::dataVerified() ? "" : " (certificate not checked)", trying);
   }
-  char buf[256];
-  snprintf(buf, sizeof(buf),
-           "<div class='hn'>Status: %s &middot; running %lu h %lu min &middot; "
-           "last restart: %s</div>",
-           data, up_min / 60, up_min % 60, services::health::lastRestartText());
-  server.sendContent(buf);
+  putf(server, " &middot; running %lu h %lu min &middot; last restart: %s</div>", up_min / 60,
+       up_min % 60, services::health::lastRestartText());
   char feeds[160];
   services::adsb::feedStatusText(feeds, sizeof(feeds));
   if (feeds[0] != '\0') {
     // Feed names and numbers only: nothing in it needs escaping.
-    snprintf(buf, sizeof(buf), "<div class='hn'>Feeds: %s</div>", feeds);
-    server.sendContent(buf);
+    putf(server, "<div class='hn'>Feeds: %s</div>", feeds);
   }
 }
 
-void sendAboutSection(WebServer& server);
+PORTAL_SECTION void sendAboutSection(WebServer& server);
 
 void handleSettings(WebServer& server) {
   // A lookup that finished since the last loop pass shows as applied.
@@ -462,37 +673,50 @@ void handleSettings(WebServer& server) {
   sendPageStart(server, "Settings", kSettingsPath, looking ? 2 : 0);
 
   if (server.hasArg("saved")) {
-    server.sendContent("<div class='ok'>Settings saved.</div>");
+    put(server, "<div class='ok'>Settings saved.</div>");
+  }
+  if (server.arg("name") == "bad") {
+    put(server,
+        "<div class='er'>The radar's name was not changed. Use plain letters, numbers "
+        "and punctuation (no accents or emoji), up to 32 of them.</div>");
   }
   sendLocationNotice(server, loc);
 
   if (!location::isSet()) {
     // Setup step 2: the location is the only thing asked for, so it is the
     // only thing on the page.
-    server.sendContent(
+    sendWelcomeIntro(server, "One more step, then it says welcome and offers a short guide.");
+    put(server,
         "<div class='st'><b>Step 2 of 2:</b> tell the radar where it is. Type "
         "your town or ZIP code, or paste coordinates from a map app, then tap "
         "<b>Save location</b>.</div>");
     sendLocationSection(server);
-    server.sendContent(
+    put(server,
         "<div class='hn'>The other settings appear here once the radar knows "
         "where it is.</div>");
     sendPageEnd(server);
     return;
   }
 
+  if (!welcome::guideSeen()) {
+    // Until it has been read once: whoever opens this page first may well
+    // have been handed the radar without a word about it.
+    put(server,
+        "<a class='nh' href='/guide'><b>New here?</b> A short guide &rsaquo;</a>");
+  }
   sendStatusLine(server);
   sendLocationSection(server);
   sendDisplaySections(server);
 
   sendAboutSection(server);
 
-  server.sendContent(
+  put(server,
       "<div class='sc'>Giving the radar away</div>"
-      "<div class='hn'>Erases the location, the display settings and the Wi-Fi, "
-      "and restarts at setup step 1 for the next person.</div>");
+      "<div class='hn'>Erases the location, the name, the display settings and the "
+      "Wi-Fi, and restarts at setup step 1 for the next person, who is then "
+      "welcomed with a short guide.</div>");
   sendFormStart(server, kResetPath);
-  server.sendContent(
+  put(server,
       "<button class='d' type='submit'>Reset for a new owner&hellip;</button></form>");
   sendPageEnd(server);
 }
@@ -502,21 +726,19 @@ void handleSettings(WebServer& server) {
  * (adsb.fi's terms ask for a link). URLs are spelled out as well as linked:
  * a phone on the radar's hotspot has no internet to follow them.
  */
-void sendAboutSection(WebServer& server) {
+PORTAL_SECTION void sendAboutSection(WebServer& server) {
+  putf(server,
+       "<div class='sc'>About</div>"
+       "<div class='hn'>Plane Radar %s &middot; <a href='%s'>%s</a><br>Updates: ",
+       config::kFirmwareVersion, config::kRepoUrl, config::kRepoUrl + 8);
   char status[160];
   services::ota::statusText(status, sizeof(status));
-  char escaped[sizeof(status) * 6];
-  util::setup::htmlEscape(status, escaped, sizeof(escaped));
-  char buf[sizeof(escaped) + 320];
-  snprintf(buf, sizeof(buf),
-           "<div class='sc'>About</div>"
-           "<div class='hn'>Plane Radar %s &middot; <a href='%s'>%s</a><br>"
-           "Updates: %s. Signed updates install by themselves, about once a day; "
-           "Wi-Fi, location and settings are kept.</div>",
-           config::kFirmwareVersion, config::kRepoUrl, config::kRepoUrl + 8, escaped);
-  server.sendContent(buf);
+  putEscaped(server, status);
+  put(server,
+      ". Signed updates install by themselves, about once a day; "
+      "Wi-Fi, location and settings are kept.</div>");
   sendFormStart(server, kUpdateCheckPath);
-  server.sendContent(
+  put(server,
       "<button type='submit'>Check for an update now</button></form>"
       "<div class='hn'>Flight data: <a href='https://adsb.fi'>adsb.fi</a> and "
       "<a href='https://adsb.lol'>adsb.lol</a> (ODbL) &middot; routes: "
@@ -533,7 +755,7 @@ void handleUpdateCheck(WebServer& server) {
   }
   services::ota::requestCheck();
   sendPageStart(server, "Updates", kSettingsPath, 20);
-  server.sendContent(
+  put(server,
       "<div class='ok'>Looking for an update in a moment. This page goes back to the "
       "settings in 20 seconds; the result is under About.</div>");
   sendPageEnd(server);
@@ -570,13 +792,17 @@ void handleSave(WebServer& server, void (*on_saved)()) {
   ui::radar::saveTrailsFromPortal(checkboxArg(server, "trails") ? "T" : "");
   ui::radar::saveAlertSecondsFromPortal(server.arg("alert").c_str());
   ui::radar::saveTxPowerFromPortal(server.arg("tx").c_str());
+  // Free text, so a refusal is said on the page: an accent is not an obvious
+  // reason. A form without the field (an older page) leaves the name alone.
+  const bool name_ok = !server.hasArg("rname") || welcome::saveName(server.arg("rname").c_str());
 
   if (on_saved != nullptr) {
     on_saved();
   }
 
   char location[64];
-  snprintf(location, sizeof(location), "%s?saved=1", kSettingsPath);
+  snprintf(location, sizeof(location), "%s?saved=1%s", kSettingsPath,
+           name_ok ? "" : "&name=bad");
   redirect(server, location);
 }
 
@@ -644,28 +870,40 @@ void handleReset(WebServer& server, void (*on_reset)(bool)) {
   }
   if (server.arg("confirm") != "yes") {
     sendPageStart(server, "Reset", kSettingsPath);
-    server.sendContent(
+    put(server,
         "<div class='sc'>Reset for a new owner</div>"
-        "<p>This erases where the radar is, its display settings and its Wi-Fi. "
-        "It restarts and shows <b>Step 1 of 2</b>, ready for the next person to "
-        "set it up with their phone.</p>");
+        "<p>This erases where the radar is, its name, its display settings and its "
+        "Wi-Fi. It restarts into setup, ready for the next person to set it up with "
+        "their phone. Once it is set up, it welcomes them and offers a short "
+        "guide.</p>"
+        "<p>Keeping the location and the name leaves them only the Wi-Fi to do.</p>"
+        // The welcome is used up by whoever sees it first (welcome::markShown).
+        "<p><b>Do this last.</b> The welcome shows once, to whoever sets the radar "
+        "up next. If you try it out yourself afterwards, reset it again before you "
+        "give it away.</p>");
     sendFormStart(server, kResetPath);
-    server.sendContent(
+    put(server,
         "<input type='hidden' name='confirm' value='yes'>"
         "<label class='cb'><input type='checkbox' name='keep' value='1'>"
-        "Keep the location (the radar is staying in this area)</label>"
+        "Keep the location and the radar&#39;s name (it is staying in this "
+        "area)</label>"
         "<button class='d' type='submit'>Yes, erase everything</button></form>"
         "<a class='bt' href='/settings'>Cancel</a>");
     sendPageEnd(server);
     return;
   }
+  const bool keep = server.arg("keep") == "1";
   sendPageStart(server, "Reset", nullptr);
-  server.sendContent(
-      "<div class='ok'>Erasing. The radar restarts in a few seconds and shows "
-      "<b>Step 1 of 2</b>. You can close this page.</div>");
+  // What the round screen will say: with the location kept, Wi-Fi is the
+  // only step left.
+  put(server, keep && location::isSet()
+                  ? "<div class='ok'>Erasing. The radar restarts in a few seconds "
+                    "and shows <b>Wi-Fi setup</b>. You can close this page.</div>"
+                  : "<div class='ok'>Erasing. The radar restarts in a few seconds "
+                    "and shows <b>Step 1 of 2</b>. You can close this page.</div>");
   sendPageEnd(server);
   if (on_reset != nullptr) {
-    on_reset(server.arg("keep") == "1");
+    on_reset(keep);
   }
 }
 
@@ -677,17 +915,12 @@ void handleReset(WebServer& server, void (*on_reset)(bool)) {
  */
 void handleLanWifi(WebServer& server) {
   sendPageStart(server, "Wi-Fi", "/wifi");
-  char ssid[33 * 6 + 1];
-  util::setup::htmlEscape(WiFi.SSID().c_str(), ssid, sizeof(ssid));
+  put(server, "<div class='sc'>Wi-Fi</div><p>Connected to <b>");
+  putEscaped(server, WiFi.SSID().c_str());
   const int rssi = WiFi.RSSI();
   const char* strength = rssi >= -60 ? "strong" : rssi >= -72 ? "fair" : "weak";
-  char buf[400];
-  snprintf(buf, sizeof(buf),
-           "<div class='sc'>Wi-Fi</div>"
-           "<p>Connected to <b>%s</b>; the signal is %s (%d dBm).</p>",
-           ssid, strength, rssi);
-  server.sendContent(buf);
-  server.sendContent(
+  putf(server, "</b>; the signal is %s (%d dBm).</p>", strength, rssi);
+  put(server,
       "<p>To move the radar to another network &mdash; a new router, a new "
       "Wi-Fi password, a new home:</p><ol>"
       "<li>Hold the button on the radar for 10 seconds, until it says "
@@ -701,6 +934,82 @@ void handleLanWifi(WebServer& server) {
 }
 
 /**
+ * The guide: what the radar is and how to read it, for someone who was handed
+ * one. Checked against the code it describes (the range steps and their miles
+ * in ui/radar_range.h, the button's timings in config.h and its countdown in
+ * ui/status_screens.cpp, the height colours in ui/aircraft_glyph.cpp, the tag,
+ * card, brackets and "No flight data" in ui/radar_display.cpp and
+ * ui/info_card.cpp); change them together. Kept in flash and sent as it is,
+ * piece by piece, so it costs no RAM to serve.
+ */
+constexpr char kGuideIntro[] =
+    "<p>It shows the planes flying near you, live, from the radio signals planes "
+    "send out. Nothing to sign up for or log into.</p>"
+    "<div class='sc'>Reading the screen</div><ul>"
+    "<li><b>You are in the middle</b>, with north up (N, E, S and W at the "
+    "edge).</li>"
+    "<li><b>The rings</b> show distance: the number on the right is the third ring "
+    "from the middle; the outer ring is a third further.</li>"
+    "<li><b>Each plane</b> points the way it is flying; its shape shows the kind, "
+    "from small planes and helicopters to jumbo jets. A line points ahead; a faint "
+    "tail shows where it has been.</li>"
+    "<li><b>Colour shows height</b> (standard theme): orange near the ground, "
+    "through yellow, green and blue to violet at cruising height.</li>"
+    "<li><b>Next to it:</b> the flight number, where it flies from and to (or its "
+    "type, such as B738) and its height in feet.</li>"
+    "<li><b>The card</b> at the bottom (or top) spells out the plane marked with "
+    "brackets (airline, aircraft, height, speed), taking the nearest few in "
+    "turn.</li>"
+    "<li><b>A dot on the edge</b> is a plane beyond the outer ring.</li>"
+    "<li><b>A ring pulsing out</b> from the middle: something special just "
+    "appeared, an emergency (red), a military plane (amber) or a rare one such as "
+    "a 747 (cyan).</li></ul>";
+constexpr char kGuideButton[] =
+    "<div class='sc'>The button (marked BOOT)</div><ul>"
+    "<li><b>Tap:</b> change the range: 5, 10, 15 or 25 km (3, 6, 9 or 16 in "
+    "miles).</li>"
+    "<li><b>Hold until a countdown appears, then let go:</b> an info screen with the "
+    "settings&#39; address; a tap closes it.</li>"
+    "<li><b>Hold until the countdown ends</b> (10 seconds): it forgets its Wi-Fi "
+    "and asks again. For a new router or password only.</li></ul>"
+    "<div class='sc'>Good to know</div><ul>"
+    "<li><b>At night</b> the screen dims, from dusk to dawn.</li>"
+    "<li><b>No planes?</b> Some skies are quiet: tap for a wider range.</li>"
+    "<li><b>&ldquo;No flight data&rdquo;:</b> none for a minute, usually because the "
+    "flight service or your internet is down. It keeps trying. &ldquo;next update in "
+    "N min&rdquo; means it is on a slower backup.</li>"
+    "<li><b>&ldquo;Wi-Fi lost&rdquo;:</b> it keeps trying. If it lasts, check the "
+    "router, then unplug the radar and plug it back in.</li>"
+    "<li><b>Updates</b> install by themselves, keeping your settings.</li>"
+    "<li><b>It feels warm.</b> That is normal.</li></ul>"
+    "<div class='sc'>Settings</div>";
+
+// A plain GET counts as reading the guide (the welcome's QR code is a GET), so
+// any web page could mark it read by loading this address, say as an image:
+// the welcome would end early and Settings would stop pointing here. Accepted:
+// that is all it does, nothing is changed, the Guide link stays in the menu,
+// and the Sec-Fetch-* headers that could tell a page from a scan are only sent
+// to HTTPS addresses, never to this plain-HTTP one.
+void handleGuide(WebServer& server) {
+  if (!sendPageStart(server, "Guide", kGuidePath)) {
+    return;  // "busy": the guide was not shown, so the welcome stays
+  }
+  welcome::noteGuideOpened();
+  put(server, "<h2>Welcome to ");
+  putName(server);
+  put(server, "</h2>");
+  put(server, kGuideIntro, sizeof(kGuideIntro) - 1);
+  put(server, kGuideButton, sizeof(kGuideButton) - 1);
+  // The address too: not every phone finds plane-radar.local.
+  putf(server,
+       "<p>Theme, text size, miles, night dimming, the location and the name are "
+       "on the <a href='%s'>settings page</a>. On the same Wi-Fi, open "
+       "<b>%s/settings</b> (or <b>%s/settings</b>).</p>",
+       kSettingsPath, config::kPortalHostUrl, WiFi.localIP().toString().c_str());
+  sendPageEnd(server);
+}
+
+/**
  * The hotspot's answer to the Wi-Fi form. Nothing is stored here: the radar
  * tries the network first (wifi_setup.cpp) and keeps it only if it works,
  * showing the outcome on its own screen — the phone loses the hotspot while
@@ -709,17 +1018,15 @@ void handleLanWifi(WebServer& server) {
 void handleHotspotSave(WebServer& server, void (*on_join)(const char*, const char*)) {
   const String ssid = server.arg("s");
   const String pass = server.arg("p");
-  char name[33 * 6 + 1];
-  util::setup::htmlEscape(ssid.c_str(), name, sizeof(name));
   if (!util::setup::plausibleSsid(ssid.c_str()) ||
       !util::setup::plausiblePassword(pass.c_str())) {
     sendPageStart(server, "Wi-Fi setup", nullptr);
-    server.sendContent(
+    put(server,
         ssid.length() == 0
             ? "<div class='er'>Pick your home network from the list first.</div>"
             : "<div class='er'>That password cannot be right: Wi-Fi passwords have "
               "8 to 63 characters.</div>");
-    server.sendContent("<a class='bt' href='/wifi'>Back</a>");
+    put(server, "<a class='bt' href='/wifi'>Back</a>");
     sendPageEnd(server);
     return;
   }
@@ -728,22 +1035,31 @@ void handleHotspotSave(WebServer& server, void (*on_join)(const char*, const cha
   }
   const bool two_steps = !location::isSet();
   sendPageStart(server, "Wi-Fi setup", nullptr);
-  char buf[480];
-  snprintf(buf, sizeof(buf),
-           "<div class='st'><b>%s</b> the radar is joining <b>%s</b>.</div>"
-           "<p>Watch the radar's screen.</p>",
-           two_steps ? "Step 1 of 2:" : "Wi-Fi setup:", name);
-  server.sendContent(buf);
-  server.sendContent(
-      two_steps ? "<p>When it says <b>Step 2 of 2</b>, put your phone back on your "
-                  "home Wi-Fi and scan the new code.</p>"
-                : "<p>When it shows planes again, you are done: put your phone back "
-                  "on your home Wi-Fi.</p>");
-  snprintf(buf, sizeof(buf),
-           "<div class='hn'>If it says <b>Could not join</b> or <b>Not found</b>, "
-           "join <b>%s</b> again and pick the network once more.</div>",
-           config::kPortalApName);
-  server.sendContent(buf);
+  putf(server, "<div class='st'><b>%s</b> the radar is joining <b>",
+       two_steps ? "Step 1 of 2:" : "Wi-Fi setup:");
+  putEscaped(server, ssid.c_str());
+  put(server, "</b>.</div><p>Watch the radar's screen.</p>");
+  if (two_steps) {
+    put(server,
+        "<p>When it says <b>Step 2 of 2</b>, put your phone back on your home Wi-Fi "
+        "and scan the new code.</p>");
+  } else if (welcome::due()) {
+    // A new owner's radar greets them first (main.cpp, showWelcome), for 3
+    // minutes at most: where the guide lives, for one who misses it.
+    putf(server,
+         "<p>When it says <b>Welcome</b>, you are done: put your phone back on your "
+         "home Wi-Fi and scan the code on the radar for a short guide.</p>"
+         "<p>Missed it? On your home Wi-Fi, open <b>%s/guide</b>.</p>",
+         config::kPortalHostUrl);
+  } else {
+    put(server,
+        "<p>When it shows planes again, you are done: put your phone back on your "
+        "home Wi-Fi.</p>");
+  }
+  putf(server,
+       "<div class='hn'>If it says <b>Could not join</b> or <b>Not found</b>, "
+       "join <b>%s</b> again and pick the network once more.</div>",
+       config::kPortalApName);
   sendPageEnd(server);
 }
 
@@ -865,11 +1181,9 @@ void handleScreen(WebServer& server) {
   free(out);
   if (!drawn) {
     server.send(503, "text/plain", "no frame yet");
-    return;
   }
-  if (st.aborted) {
-    server.client().stop();
-  }
+  // An aborted picture needs nothing more: nothing was written after it
+  // stopped, and the server closes the connection once this returns.
 }
 
 }  // namespace
@@ -896,8 +1210,9 @@ const char* headHtml() {
       "background:#fff;color:#222}"
       "a{color:#1a73c8}"
       ".wrap{display:block;max-width:430px;margin:0 auto;text-align:left}"
-      "#nv{display:flex;gap:5px;margin:0 0 16px}"
-      "#nv a{flex:1;text-align:center;padding:9px 4px;border-radius:8px;"
+      "#nv{display:flex;gap:4px;margin:0 0 16px}"
+      "#nv a{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;"
+      "white-space:nowrap;text-align:center;padding:9px 4px;border-radius:8px;"
       "background:#f2f2f2;border:1px solid #dcdcdc;color:#444;"
       "text-decoration:none;font-size:14px;font-weight:400}"
       "#nv a.on{background:#1fa3ec;border-color:#1fa3ec;color:#fff}"
@@ -906,7 +1221,8 @@ const char* headHtml() {
       "<script>"
       "addEventListener('DOMContentLoaded',function(){"
       "var m=[['/','Home'],['/wifi','Wi-Fi'],['/settings','Settings'],"
-      "['/info','System']],w=document.querySelector('.wrap');if(!w)return;"
+      "['/guide','Guide'],['/info','System']],w=document.querySelector('.wrap');"
+      "if(!w)return;"
       "var n=document.createElement('div');n.id='nv';"
       "m.forEach(function(e){var a=document.createElement('a');"
       "a.href=e[0];a.textContent=e[1];"
@@ -917,46 +1233,106 @@ const char* headHtml() {
   return kHead;
 }
 
+namespace {
+
 // The hotspot's <head>: the light look of the home-network pages without the
 // navigation (there is only the Wi-Fi form to see), WiFiManager's status box
 // hidden (it reports the library's own attempts, which this firmware does not
-// make), and a script that adds the step header and says "Network" for SSID.
-#define PLANE_RADAR_HOTSPOT_HEAD(header)                                              \
-  "<style>"                                                                           \
-  ":root{color-scheme:light}"                                                         \
-  "body{background:#fff;color:#222;font-family:system-ui,-apple-system,sans-serif;"   \
-  "padding:16px;margin:0}"                                                            \
-  ".wrap{display:block;max-width:430px;margin:0 auto;text-align:left}"                \
-  "button,input[type='submit']{border-radius:6px}"                                    \
-  "input:not([type]),input[type=text],input[type=password]{box-sizing:border-box;"    \
-  "padding:8px;font-size:16px;border:1px solid #ccc;border-radius:6px;"               \
-  "background:#fff;color:#222}"                                                       \
-  "a{color:#1a73c8}.msg{display:none}"                                                \
-  ".st{margin:0 0 14px;padding:10px 12px;border-radius:6px;font-size:15px;"           \
-  "line-height:1.4;background:#fff6e5;border:1px solid #f3d29a;color:#5a3d00}"        \
-  "</style><script>"                                                                  \
-  "addEventListener('DOMContentLoaded',function(){"                                   \
-  "var w=document.querySelector('.wrap');if(!w)return;"                               \
-  "var d=document.createElement('div');d.className='st';d.innerHTML='" header "';"    \
-  "w.insertBefore(d,w.firstChild);"                                                   \
-  "var l=document.querySelector(\"label[for='s']\");if(l)l.textContent='Network';"    \
-  "document.title='Wi-Fi setup - Plane Radar'});"                                     \
+// make), and a script that puts the step header (and for a new owner a
+// greeting before it) above the form and says "Network" for SSID. The markup
+// sits in the script's single-quoted string, so it has no single quotes:
+// attributes go unquoted.
+#define PLANE_RADAR_HOTSPOT_HEAD_START                                              \
+  "<style>"                                                                         \
+  ":root{color-scheme:light}"                                                       \
+  "body{background:#fff;color:#222;font-family:system-ui,-apple-system,sans-serif;" \
+  "padding:16px;margin:0}"                                                          \
+  ".wrap{display:block;max-width:430px;margin:0 auto;text-align:left}"              \
+  "button,input[type='submit']{border-radius:6px}"                                  \
+  "input:not([type]),input[type=text],input[type=password]{box-sizing:border-box;"  \
+  "padding:8px;font-size:16px;border:1px solid #ccc;border-radius:6px;"             \
+  "background:#fff;color:#222}"                                                     \
+  "a{color:#1a73c8}.msg{display:none}"                                              \
+  ".wl{margin:0 0 12px;font-size:15px;line-height:1.45}"                            \
+  ".st{margin:0 0 14px;padding:10px 12px;border-radius:6px;font-size:15px;"         \
+  "line-height:1.4;background:#fff6e5;border:1px solid #f3d29a;color:#5a3d00}"      \
+  "</style><script>"                                                                \
+  "addEventListener('DOMContentLoaded',function(){"                                 \
+  "var w=document.querySelector('.wrap');if(!w)return;"                             \
+  "var d=document.createElement('div');d.innerHTML='"
+#define PLANE_RADAR_HOTSPOT_HEAD_END                                                \
+  "';w.insertBefore(d,w.firstChild);"                                               \
+  "var l=document.querySelector(\"label[for='s']\");if(l)l.textContent='Network';"  \
+  "document.title='Wi-Fi setup - Plane Radar'});"                                   \
   "</script>"
 
-const char* hotspotHeadHtml(bool location_set) {
-  static constexpr char kStepOne[] = PLANE_RADAR_HOTSPOT_HEAD(
-      "<b>Step 1 of 2:</b> connect the radar to your home Wi-Fi. "
-      "Only 2.4 GHz networks work.");
-  static constexpr char kWifiOnly[] = PLANE_RADAR_HOTSPOT_HEAD(
-      "<b>Wi-Fi setup:</b> connect the radar to your Wi-Fi. "
-      "Only 2.4 GHz networks work.");
-  return location_set ? kWifiOnly : kStepOne;
-}
+// The two heads as they are without a greeting: in flash, so the hotspot
+// costs no RAM on the radars (nearly all of them) that are not new owners'.
+constexpr char kHotspotHeadStepOne[] =
+    PLANE_RADAR_HOTSPOT_HEAD_START
+    "<div class=st><b>Step 1 of 2:</b> connect the radar to your home Wi-Fi. "
+    "Only 2.4 GHz networks work.</div>" PLANE_RADAR_HOTSPOT_HEAD_END;
+constexpr char kHotspotHeadWifiOnly[] =
+    PLANE_RADAR_HOTSPOT_HEAD_START
+    "<div class=st><b>Wi-Fi setup:</b> connect the radar to your Wi-Fi. "
+    "Only 2.4 GHz networks work.</div>" PLANE_RADAR_HOTSPOT_HEAD_END;
+/** Where a greeting goes in either: just inside the script's string. */
+constexpr size_t kHotspotGreetingAt = sizeof(PLANE_RADAR_HOTSPOT_HEAD_START) - 1;
 
-#undef PLANE_RADAR_HOTSPOT_HEAD
+#undef PLANE_RADAR_HOTSPOT_HEAD_START
+#undef PLANE_RADAR_HOTSPOT_HEAD_END
+
+/** The greeting with the longest name (every character an entity) and wording. */
+constexpr size_t kHotspotGreetingLen =
+    sizeof("<p class=wl>Welcome to <b></b>! It shows the planes flying near you, live. "
+           "Setup takes about two minutes.</p>") +
+    util::portal::kMaxRadarName * 6;
+constexpr size_t kHotspotHeadMax =
+    (sizeof(kHotspotHeadStepOne) > sizeof(kHotspotHeadWifiOnly) ? sizeof(kHotspotHeadStepOne)
+                                                                 : sizeof(kHotspotHeadWifiOnly)) +
+    kHotspotGreetingLen;
+
+}  // namespace
+
+const char* hotspotHeadHtml(bool location_set, bool welcome, const char* name) {
+  const char* plain = location_set ? kHotspotHeadWifiOnly : kHotspotHeadStepOne;
+  if (!welcome) {
+    return plain;
+  }
+  // WiFiManager keeps only the pointer and copies the text into every page it
+  // builds, so it must outlive the portal. Taken from the heap the first time
+  // a new owner's hotspot opens and kept (a later portal reuses it); that
+  // setup ends in a restart. No room: the head without the greeting.
+  static char* s_head = nullptr;
+  if (s_head == nullptr) {
+    s_head = static_cast<char*>(malloc(kHotspotHeadMax));
+    if (s_head == nullptr) {
+      return plain;
+    }
+  }
+  // Written in place, piece by piece, with no copies on the stack (this runs
+  // on loopTask, see PageOut). Bounded by construction: kHotspotHeadMax has
+  // room for the longest greeting, and the name is cut by its escape, never
+  // the script.
+  size_t at = static_cast<size_t>(snprintf(s_head, kHotspotHeadMax,
+                                           "%.*s<p class=wl>Welcome to <b>",
+                                           static_cast<int>(kHotspotGreetingAt), plain));
+  util::setup::htmlEscapeInScript(name, s_head + at, util::portal::kMaxRadarName * 6 + 1);
+  const bool named = s_head[at] != '\0';
+  if (!named) {
+    snprintf(s_head + at, kHotspotHeadMax - at, "%s", kUnnamed);
+  }
+  at += strlen(s_head + at);
+  snprintf(s_head + at, kHotspotHeadMax - at,
+           "</b>%s It shows the planes flying near you, live. Setup takes about %s.</p>%s",
+           afterName(named ? name : kUnnamed), location_set ? "a minute" : "two minutes",
+           plain + kHotspotGreetingAt);
+  return s_head;
+}
 
 void registerLanRoutes(WebServer& server, const Hooks& hooks) {
   server.on(kSettingsPath, HTTP_GET, [&server]() { handleSettings(server); });
+  server.on(kGuidePath, HTTP_GET, [&server]() { handleGuide(server); });
   server.on(kScreenPath, HTTP_GET, [&server]() { handleScreen(server); });
   const auto on_saved = hooks.on_settings_saved;
   server.on(kSavePath, HTTP_POST,

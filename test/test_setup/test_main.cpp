@@ -1,7 +1,8 @@
 /**
  * Host tests for the guided first-time setup: the pasted-coordinates parser,
- * the town / ZIP code lookup's query and ranking, the setup texts, and the
- * self-repair rules that setup changes.
+ * the town / ZIP code lookup's query and ranking, the setup texts, the radar's
+ * name and the welcome that follows setup, and the self-repair rules that
+ * setup changes.
  *
  * Everything here is reachable from the setup pages by whoever is on the
  * network, so the hostile and malformed inputs matter as much as the happy
@@ -17,6 +18,7 @@
 #include "util/coords.h"
 #include "util/geocode.h"
 #include "util/health.h"
+#include "util/portal_input.h"
 #include "util/setup_text.h"
 
 void setUp() {}
@@ -429,6 +431,126 @@ void test_html_escape() {
   TEST_ASSERT_EQUAL_STRING("", tiny);
 }
 
+void test_html_entity_matches_escape() {
+  // The portal escapes straight onto the page one character at a time
+  // (portal_pages.cpp, putEscaped): the same text as htmlEscape, every byte.
+  for (int c = 1; c < 256; ++c) {
+    const char in[2] = {static_cast<char>(c), '\0'};
+    char escaped[8];
+    util::setup::htmlEscape(in, escaped, sizeof(escaped));
+    const char* entity = util::setup::htmlEntity(in[0]);
+    TEST_ASSERT_EQUAL_STRING(escaped, entity != nullptr ? entity : in);
+  }
+}
+
+void test_html_escape_in_script() {
+  char out[96];
+  // The hotspot's step header sits in a single-quoted script string: a quote,
+  // a backslash or a line break in the name must not end or bend it.
+  util::setup::htmlEscapeInScript("Ada's \\x radar\n</script>", out, sizeof(out));
+  TEST_ASSERT_EQUAL_STRING("Ada&#39;s &#92;x radar&lt;/script&gt;", out);
+  util::setup::htmlEscapeInScript("\"&\t", out, sizeof(out));
+  TEST_ASSERT_EQUAL_STRING("&quot;&amp;", out);
+  // The plain escape leaves a backslash alone: a page is not a script.
+  util::setup::htmlEscape("a\\b", out, sizeof(out));
+  TEST_ASSERT_EQUAL_STRING("a\\b", out);
+  char tiny[7];
+  util::setup::htmlEscapeInScript("ab\\cd", tiny, sizeof(tiny));  // "ab&#92;" needs 8 with the NUL
+  TEST_ASSERT_EQUAL_STRING("ab", tiny);
+}
+
+// --- the radar's name ---------------------------------------------------------------
+
+namespace {
+
+/** Accepted, and comes out as `want`. */
+void expectName(const char* value, const char* want) {
+  char out[util::portal::kMaxRadarName + 1] = "untouched";
+  TEST_ASSERT_TRUE_MESSAGE(util::portal::radarName(value, out, sizeof(out)), value);
+  TEST_ASSERT_EQUAL_STRING_MESSAGE(want, out, value);
+}
+
+/** Refused, and the output left as it was. */
+void expectNoName(const char* value) {
+  char out[util::portal::kMaxRadarName + 1] = "untouched";
+  TEST_ASSERT_FALSE_MESSAGE(util::portal::radarName(value, out, sizeof(out)), value);
+  TEST_ASSERT_EQUAL_STRING_MESSAGE("untouched", out, value);
+}
+
+}  // namespace
+
+void test_radar_name_accepts_printable_ascii() {
+  expectName("Ada's radar", "Ada's radar");
+  expectName("  Kitchen radar  ", "Kitchen radar");  // trimmed
+  expectName("", "");                                // no name: the generic wording
+  expectName("     ", "");
+  expectName("<b>&\"'\\{}~</b>", "<b>&\"'\\{}~</b>");  // escaped where shown, not here
+  expectName("12345678901234567890123456789012", "12345678901234567890123456789012");
+  expectName("  12345678901234567890123456789012  ", "12345678901234567890123456789012");
+}
+
+void test_radar_name_rejects_what_the_screen_cannot_draw() {
+  expectNoName("Zo\xc3\xab");          // UTF-8 accent: no glyph on the round screen
+  expectNoName("Radar \xf0\x9f\x9b\xa9");  // emoji
+  expectNoName("two\nlines");
+  expectNoName("tab\there");
+  expectNoName("del\x7f");
+  expectNoName("123456789012345678901234567890123");  // 33
+  expectNoName(nullptr);
+  // A hostile field far longer than any form sends is not even scanned whole.
+  std::string spaces(4000, ' ');
+  expectNoName((spaces + "Ada" + spaces).c_str());
+  char small[8];
+  TEST_ASSERT_FALSE(util::portal::radarName("Ada", small, sizeof(small)));  // no room for 32
+}
+
+void test_radar_name_makes_phone_punctuation_plain() {
+  // An iPhone types the placeholder's own example with a curly apostrophe.
+  expectName("Ada" "\xe2\x80\x99" "s radar", "Ada's radar");
+  expectName("\xe2\x80\x98" "Sky" "\xe2\x80\x99", "'Sky'");
+  expectName("\xe2\x80\x9c" "Sky" "\xe2\x80\x9d" " watch", "\"Sky\" watch");
+  expectName("Sky" "\xe2\x80\x93" "watch " "\xe2\x80\x94" " den", "Sky-watch - den");
+  expectName("Wait for it" "\xe2\x80\xa6", "Wait for it...");
+  // The limit is on what is kept: a curly quote mid-way in a 32-character
+  // name is one character, an ellipsis three.
+  expectName("12345678901234" "\xe2\x80\x99" "12345678901234567",
+             "12345678901234'12345678901234567");
+  expectNoName("12345678901234" "\xe2\x80\x99" "123456789012345678");  // 33
+  expectNoName("123456789012345678901234567890" "\xe2\x80\xa6");    // 30 + 3
+  // Other sequences, and cut-off ones, are refused as before.
+  expectNoName("Ada" "\xe2\x80\x9f");  // a quote mark the screen has no stand-in for
+  expectNoName("Ada" "\xe2\x81\x99");
+  expectNoName("Ada" "\xe2\x80");
+  expectNoName("Ada" "\xe2");
+  expectNoName("Ada" "\x80\x99");
+}
+
+// --- the welcome after setup --------------------------------------------------------
+
+void test_welcome_ends_on_tap_guide_or_time() {
+  using util::setup::WelcomeEnd;
+  using util::setup::welcomeEnd;
+  constexpr unsigned long kShow = 180000;
+  const auto code = [](WelcomeEnd e) { return static_cast<int>(e); };
+  TEST_ASSERT_EQUAL(code(WelcomeEnd::kNotYet), code(welcomeEnd(1000, 1000, false, false, kShow)));
+  TEST_ASSERT_EQUAL(code(WelcomeEnd::kNotYet),
+                    code(welcomeEnd(1000, 1000 + kShow - 1, false, false, kShow)));
+  TEST_ASSERT_EQUAL(code(WelcomeEnd::kTimedOut),
+                    code(welcomeEnd(1000, 1000 + kShow, false, false, kShow)));
+  TEST_ASSERT_EQUAL(code(WelcomeEnd::kTapped), code(welcomeEnd(1000, 2000, true, false, kShow)));
+  TEST_ASSERT_EQUAL(code(WelcomeEnd::kGuideOpened),
+                    code(welcomeEnd(1000, 2000, false, true, kShow)));
+  // A tap is the owner's own answer: it wins over the rest.
+  TEST_ASSERT_EQUAL(code(WelcomeEnd::kTapped),
+                    code(welcomeEnd(1000, 1000 + kShow, true, true, kShow)));
+  // Across millis() wrapping: shown just before, still up just after.
+  const unsigned long before_wrap = static_cast<unsigned long>(-1) - 5000;
+  TEST_ASSERT_EQUAL(code(WelcomeEnd::kNotYet),
+                    code(welcomeEnd(before_wrap, 10000, false, false, kShow)));
+  TEST_ASSERT_EQUAL(code(WelcomeEnd::kTimedOut),
+                    code(welcomeEnd(before_wrap, kShow, false, false, kShow)));
+}
+
 // --- self-repair during setup ------------------------------------------------------
 
 namespace {
@@ -533,6 +655,12 @@ int main(int, char**) {
   RUN_TEST(test_wifi_qr_text);
   RUN_TEST(test_plausible_credentials);
   RUN_TEST(test_html_escape);
+  RUN_TEST(test_html_entity_matches_escape);
+  RUN_TEST(test_html_escape_in_script);
+  RUN_TEST(test_radar_name_accepts_printable_ascii);
+  RUN_TEST(test_radar_name_rejects_what_the_screen_cannot_draw);
+  RUN_TEST(test_radar_name_makes_phone_punctuation_plain);
+  RUN_TEST(test_welcome_ends_on_tap_guide_or_time);
   RUN_TEST(test_health_setup_pending_is_not_a_stalled_feed);
   RUN_TEST(test_health_fetch_clocks_start_when_setup_ends);
   RUN_TEST(test_health_setup_pending_keeps_the_other_rules);

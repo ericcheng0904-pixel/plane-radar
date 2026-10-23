@@ -33,6 +33,13 @@ void statusScreenLocationStep(const char* ip);
 /** Shown for a few seconds after a location is saved: where the radar looks now. */
 void statusScreenLocationSaved(const char* place);
 
+/**
+ * Once, for a new owner, in place of the radar: "Welcome to <name>" ("your
+ * Plane Radar" when `name` is empty), a QR code for the guide page at `ip`,
+ * and that a tap skips it. A long name takes two lines.
+ */
+void statusScreenWelcome(const char* name, const char* ip);
+
 /** Wi-Fi gone for longer than a hiccup. Tick keeps the spinner turning. */
 void statusScreenWifiLost(const char* ssid);
 void statusScreenWifiLostTick();

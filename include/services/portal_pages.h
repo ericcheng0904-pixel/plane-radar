@@ -11,8 +11,11 @@
  * block the page simply stopped mid-way — no error, no Save button. The 240x240
  * frame sprite alone holds 115 KB, so that block is not coming back.
  *
- * The settings page here is written straight to the socket in small chunks
- * instead, so the memory it needs does not depend on how long the page is.
+ * The settings page here is written to the socket in chunks instead, one TCP
+ * segment's worth at a time, so the memory it needs does not depend on how
+ * long the page is. The pages are formatted into that one chunk buffer, not on
+ * the stack: they run on the main loop's 8 KB stack (portal_pages.cpp,
+ * PageOut).
  *
  * Two sets of routes, for the two ways a phone reaches the radar: the setup
  * hotspot (step 1: only the Wi-Fi form is offered) and the home network
@@ -45,14 +48,18 @@ const char* headHtml();
  * The same for the setup hotspot: a "Step 1 of 2" header (plain "Wi-Fi
  * setup" when `location_set`, since then Wi-Fi is the only step), the SSID
  * field labelled "Network", WiFiManager's status box hidden and no
- * navigation, so the Wi-Fi form is all there is. Under ~1.5 KB: WiFiManager
- * adds it to every page it builds as one String.
+ * navigation, so the Wi-Fi form is all there is. With `welcome` (a new owner)
+ * a line before the step says what the radar is, by its `name` ("" for none).
+ * Without `welcome` it is a constant in flash; with it, it is built into a
+ * buffer taken from the heap once, which each such call overwrites: call it
+ * as the hotspot opens. Under ~1.5 KB: WiFiManager adds it to every page it
+ * builds as one String.
  */
-const char* hotspotHeadHtml(bool location_set);
+const char* hotspotHeadHtml(bool location_set, bool welcome, const char* name);
 
 /**
  * Home network: /settings with /settingssave, /locationsave and /reset,
- * /screen.bmp, the /param redirect, and /wifi (with /0wifi and /wifisave)
+ * /guide, /screen.bmp, the /param redirect, and /wifi (with /0wifi and /wifisave)
  * replaced by how to change networks — saving there would keep credentials
  * nobody had checked. Call from WiFiManager's web-server callback, which runs
  * before the library registers its own routes: the ESP32 web server

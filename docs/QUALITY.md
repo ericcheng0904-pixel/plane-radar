@@ -64,8 +64,14 @@ g++ -std=gnu++17 -Wall -Wextra -Werror -I include -I tools/host_checks/stubs \
 This exists because of a defect that no compiler and no static analyser could
 see: WiFiManager assembled the page as one Arduino `String`, and `String` gives
 no error when the heap cannot grow it. The page stopped after six controls, with
-no Save button and nothing in the log. The page is now streamed in small chunks;
-the check fails the build if it ever stops short again.
+no Save button and nothing in the log. The page is now streamed in chunks; the
+check fails the build if it ever stops short again.
+
+It also fails if a page goes out in more than about one chunk per KB. On the
+radar each `sendContent` is three socket writes and, with `TCP_NODELAY` on,
+three TCP segments, and lwIP lets 8 wait for an ACK: the settings page, sent
+in some sixty pieces, took 5 s. The pages write through `put`/`putf`, which
+gather one TCP segment (1436 bytes) per chunk.
 
 ## Stage 3 — Static analysis
 
@@ -105,6 +111,48 @@ logos or a partition table other than the two-slot release layout.
 Watch the reported RAM figure. It excludes the 115 KB frame sprite, which is
 allocated at runtime — headroom is tighter than the percentage suggests.
 
+### Stack frames within limits
+
+The web pages, the screens and the Wi-Fi setup all run on Arduino's loopTask,
+which has 8 KB of stack for everything under `loop()`: WiFiManager, the web
+server, a page handler, `printf` (1 KB on its own) and lwIP. v2.0.13's
+settings page overflowed it — the compiler inlined four section senders into
+one 3.5 KB frame — and the radar rebooted with nothing to see at build time.
+
+`scripts/check_stack_usage.py` builds the firmware with `-fstack-usage` into
+`.pio/stack-usage` (the regular `.pio/build` is left alone) and fails on any
+function of `src/` or `include/` whose frame is over its limit:
+
+- 1024 bytes for any function, an eighth of loopTask's stack;
+- 512 bytes in `src/services/portal_pages.cpp`, whose functions nest three or
+  four deep under the web server — they write into the page buffer
+  (`put`, `putf`, `putEscaped`), not into `char` arrays of their own;
+- any dynamic frame (a variable-length array or `alloca`).
+
+A std::function invoker counts as the code it wraps: a route's whole handler
+can be inlined into it. Every line of every `.su` file is checked: GCC writes
+all of a file's route invokers under one name, and a check of one frame per
+name missed the rest (`scripts/test_check_stack_usage.py`, run first in CI,
+holds it to that). Allowed above the limit, each with a cap: the town
+search, the update check and the aircraft fetch, which run on the fetch task
+with a 12 KB stack of its own (`config::kAdsbTaskStackBytes`). A chain of
+frames is what overflows, but GCC 8.4 cannot write the call graph; limits per
+frame keep every chain short. With them the settings page needs about 3 KB
+and the deepest request (`/screen.bmp`, which draws a frame) under 4 KB; the
+serial log's "loop stack left" (in the periodic chip temperature line) shows
+the least loopTask has had to spare since boot.
+
+```bash
+python3 scripts/check_stack_usage.py             # build, then check
+python3 scripts/check_stack_usage.py --no-build  # check the last such build
+PIO=/path/to/pio python3 scripts/check_stack_usage.py   # pio not on PATH
+```
+
+Over the limit: move the buffer off the stack (in the portal, write into the
+page with `putf`), or keep a section a function of its own with
+`__attribute__((noinline))` so its buffer is not live under the rest of the
+page.
+
 ## Stage 5 — Hardware smoke test
 
 CI cannot see the display, reach a Wi-Fi network, or press BOOT. Before merging
@@ -125,12 +173,18 @@ and walk this list:
       Power-cycle → the radar comes straight back (the Wi-Fi was kept in flash).
 - [ ] Portal reachable again at `http://plane-radar.local` once on the LAN, and
       its menu offers no **Update** (OTA) entry.
-- [ ] The navigation bar (Home / Wi-Fi / Settings / System) appears on all four
-      pages, the current page is highlighted, and every link works. If a phone
-      blocks scripts the bar is absent — the pages still work through the Home
-      buttons.
+- [ ] The navigation bar (Home / Wi-Fi / Settings / Guide / System) appears on
+      all five pages, fits a 320 px wide phone, the current page is highlighted,
+      and every link works. If a phone blocks scripts the bar is absent from
+      WiFiManager's pages — they still work through the Home buttons.
 - [ ] The Settings page shows the four group headings and every option; saving
       from there applies immediately without touching the Wi-Fi credentials.
+- [ ] Open Settings, Guide, Wi-Fi and `/screen.bmp` several times, also while
+      the radar is fetching: each page arrives whole (Settings down to **Reset
+      for a new owner**) within about a second, and the radar never restarts.
+      The next serial "Chip temperature" line says "loop stack left" about
+      4000 or more (bytes of loopTask's 8 KB never used); under 2000 needs a
+      look.
 - [ ] `http://<device-ip>/update`, `/u`, `/erase` and `/restart` each return
       404 — these are the routes WiFiManager would otherwise expose unauthenticated.
 - [ ] Change **Text size** to 1, 2 and 3 → labels resize immediately, no reboot,
@@ -140,8 +194,19 @@ and walk this list:
 - [ ] Range presets still cycle on a short BOOT tap, and the range label matches.
 - [ ] Hold BOOT 10 s (countdown after 2 s) → only the Wi-Fi is cleared; the
       radar reboots into step 1 and, once rejoined, keeps its location.
-- [ ] Settings → **Reset for a new owner** → confirm page → location, display
-      settings and Wi-Fi erased, reboot into "Step 1 of 2".
+- [ ] Settings → **Reset for a new owner** → confirm page → location, name,
+      display settings and Wi-Fi erased, reboot into "Step 1 of 2"; the
+      hotspot page opens with "Welcome to your Plane Radar!".
+- [ ] Name the radar (a long name too, 32 characters) → reset with **Keep the
+      location and the radar's name** → "Wi-Fi setup" only; the hotspot page
+      greets by the name. After joining: "Welcome to" the name (long names on
+      two lines, nothing past the round edge) and a QR code that opens
+      `/guide`. Opening it, a tap, or 3 minutes → the radar, never again after
+      a power-cycle. A 10 s hold on the welcome still forgets the Wi-Fi.
+      Another **Reset for a new owner** → the welcome is due again.
+- [ ] On an iPhone, type the placeholder's example (*Ada's radar*, curly
+      apostrophe) as the name → saved with a plain apostrophe; an emoji →
+      "name was not changed", and the rest of the form is still saved.
 - [ ] Untick **Show flight trails** → tails disappear, symbols stay. Re-tick and
       wait two fetch intervals → tails grow again and follow the aircraft.
 - [ ] Untick **Separate symbols…** → every aircraft is the original triangle.

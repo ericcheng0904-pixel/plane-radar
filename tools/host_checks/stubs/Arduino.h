@@ -31,5 +31,6 @@ struct HostSerial {
 };
 extern HostSerial Serial;
 
-/** An hour and a bit after boot. */
-inline unsigned long millis() { return 3723000UL; }
+/** An hour and a bit after boot; a test may move the clock on. */
+inline unsigned long g_host_millis = 3723000UL;
+inline unsigned long millis() { return g_host_millis; }

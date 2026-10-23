@@ -112,32 +112,38 @@ bool plausiblePassword(const char* password) {
   return n >= 8 && n <= 63;
 }
 
-void htmlEscape(const char* in, char* out, size_t len) {
+const char* htmlEntity(char c) {
+  switch (c) {
+    case '&':
+      return "&amp;";
+    case '<':
+      return "&lt;";
+    case '>':
+      return "&gt;";
+    case '"':
+      return "&quot;";
+    case '\'':
+      return "&#39;";
+    default:
+      return nullptr;
+  }
+}
+
+namespace {
+
+/** htmlEscape(), and with `in_script` the extras of htmlEscapeInScript(). */
+void escapeInto(const char* in, char* out, size_t len, bool in_script) {
   if (out == nullptr || len == 0) {
     return;
   }
   size_t o = 0;
   for (const char* p = in != nullptr ? in : ""; *p != '\0'; ++p) {
-    const char* entity = nullptr;
-    switch (*p) {
-      case '&':
-        entity = "&amp;";
-        break;
-      case '<':
-        entity = "&lt;";
-        break;
-      case '>':
-        entity = "&gt;";
-        break;
-      case '"':
-        entity = "&quot;";
-        break;
-      case '\'':
-        entity = "&#39;";
-        break;
-      default:
-        break;
+    if (in_script && static_cast<unsigned char>(*p) < 0x20) {
+      continue;  // a line break would end the script's string mid-way
     }
+    // In a script's string a backslash starts an escape ("\x" without hex
+    // digits is a syntax error); as an entity it reaches the page as itself.
+    const char* entity = in_script && *p == '\\' ? "&#92;" : htmlEntity(*p);
     const size_t need = entity != nullptr ? std::strlen(entity) : 1;
     if (o + need >= len) {
       break;
@@ -150,6 +156,26 @@ void htmlEscape(const char* in, char* out, size_t len) {
     o += need;
   }
   out[o] = '\0';
+}
+
+}  // namespace
+
+void htmlEscape(const char* in, char* out, size_t len) { escapeInto(in, out, len, false); }
+
+void htmlEscapeInScript(const char* in, char* out, size_t len) {
+  escapeInto(in, out, len, true);
+}
+
+WelcomeEnd welcomeEnd(unsigned long shown_at_ms, unsigned long now_ms, bool tapped,
+                      bool guide_opened, unsigned long show_ms) {
+  if (tapped) {
+    return WelcomeEnd::kTapped;
+  }
+  if (guide_opened) {
+    return WelcomeEnd::kGuideOpened;
+  }
+  // Unsigned subtraction: right across millis() wrapping after ~49 days.
+  return now_ms - shown_at_ms >= show_ms ? WelcomeEnd::kTimedOut : WelcomeEnd::kNotYet;
 }
 
 }  // namespace util::setup

@@ -25,6 +25,7 @@
 #include "services/radar_location.h"
 #include "services/wifi_setup.h"
 #include "ui/panel_color.h"
+#include "util/portal_input.h"
 
 namespace {
 
@@ -291,6 +292,13 @@ int glassWidthAt(int y) {
   return static_cast<int>(2.0f * half) - 16;
 }
 
+/** Room for a line of `style` centred on row `y`; leaves the style applied. */
+int roomAt(int y, const Style& style) {
+  applyStyle(style);
+  const int h = tft.fontHeight();
+  return std::min(glassWidthAt(y - h / 2), glassWidthAt(y + h / 2));
+}
+
 /**
  * One centred line at row `y`. Text too wide for the glass there steps down
  * a font size at a time; what still does not fit (a long network name) is
@@ -300,9 +308,7 @@ void line(const char* text, int y, Style style, const ui::Rgb& colour) {
   tft.setTextDatum(textdatum_t::middle_center);
   int room = 0;
   for (;;) {
-    applyStyle(style);
-    const int h = tft.fontHeight();
-    room = std::min(glassWidthAt(y - h / 2), glassWidthAt(y + h / 2));
+    room = roomAt(y, style);
     if (tft.textWidth(text) <= room) {
       tft.setTextColor(ui::glassColor(colour), ui::glassColor(kSetupBg));
       tft.drawString(text, kCenterX, y);
@@ -437,6 +443,64 @@ void drawLocationStep() {
   line("on the same Wi-Fi", 206, kTiny, kSetupMuted);
 }
 
+char s_welcome_name[util::portal::kMaxRadarName + 1] = "";
+
+/**
+ * The first line's worth of `text` at the style applied, into `first`: whole
+ * words while any fit in `room`, else as many letters as fit (one long word).
+ * Returns the rest, without the space it was broken at.
+ */
+const char* breakLine(const char* text, int room, char* first, size_t len) {
+  const size_t n = strnlen(text, len - 1);
+  size_t words = 0;
+  size_t letters = 0;
+  for (size_t i = 1; i <= n; ++i) {
+    snprintf(first, len, "%.*s", static_cast<int>(i), text);
+    if (tft.textWidth(first) > room) {
+      break;
+    }
+    letters = i;
+    if (i == n || text[i] == ' ') {
+      words = i;
+    }
+  }
+  const size_t cut = words > 0 ? words : std::max<size_t>(letters, 1);
+  snprintf(first, len, "%.*s", static_cast<int>(cut), text);
+  const char* rest = text + cut;
+  while (*rest == ' ') {
+    ++rest;
+  }
+  return rest;
+}
+
+void drawWelcome() {
+  char url[40];
+  snprintf(url, sizeof(url), "http://%s/guide", s_arg_text);
+  const char* name = s_welcome_name[0] != '\0' ? s_welcome_name : "your Plane Radar";
+  clearSetup();
+  // One line when the name fits at the body size or a step down (line()
+  // takes that step by itself); the same rows as setup step 2.
+  const int one_line = roomAt(44, kSmall);  // first: it applies the style measured in
+  if (tft.textWidth(name) <= one_line) {
+    line("Welcome to", 24, kSmall, kSetupStep);
+    line(name, 44, kBody, kSetupText);
+    drawQr(url, kQrCenterY);
+    line("Scan for a short guide", 192, kSmall, kSetupText);
+    line("Tap the button to skip", 208, kTiny, kSetupMuted);
+    return;
+  }
+  // Two lines at the smaller size, broken between words where it can be; the
+  // code moves down a little to make room, and everything moves with it.
+  char first[sizeof(s_welcome_name)];
+  const char* rest = breakLine(name, roomAt(38, kSmall), first, sizeof(first));
+  line("Welcome to", 21, kSmall, kSetupStep);
+  line(first, 38, kSmall, kSetupText);
+  line(rest, 54, kSmall, kSetupText);
+  drawQr(url, kQrCenterY + 4);
+  line("Scan for a short guide", 195, kSmall, kSetupText);
+  line("Tap the button to skip", 210, kTiny, kSetupMuted);
+}
+
 char s_info_version[40] = "";
 char s_info_status[48] = "";
 
@@ -549,6 +613,12 @@ void statusScreenJoinFailed(const char* ssid, util::setup::JoinFailure why) {
 void statusScreenLocationStep(const char* ip) {
   snprintf(s_arg_text, sizeof(s_arg_text), "%s", ip != nullptr ? ip : "");
   show(drawLocationStep);
+}
+
+void statusScreenWelcome(const char* name, const char* ip) {
+  snprintf(s_welcome_name, sizeof(s_welcome_name), "%s", name != nullptr ? name : "");
+  snprintf(s_arg_text, sizeof(s_arg_text), "%s", ip != nullptr ? ip : "");
+  show(drawWelcome);
 }
 
 void statusScreenInfo(const char* ip, const char* version_line, const char* status_line) {

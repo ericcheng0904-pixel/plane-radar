@@ -1,5 +1,6 @@
-# Quality gates that need no hardware. Stage 4 (firmware build) lives in
-# build.yml; stage 5 (hardware smoke test) is a human checklist in docs/QUALITY.md.
+# Quality gates that need no hardware. Stage 4 (firmware build and artifact)
+# lives in build.yml; the stack check here builds a copy of its own. Stage 5
+# (hardware smoke test) is a human checklist in docs/QUALITY.md.
 name: Quality
 
 on:
@@ -77,7 +78,10 @@ jobs:
       # The settings page used to be built by WiFiManager as one Arduino
       # String, which truncates silently when the heap cannot grow it. The page
       # is now written to the socket in chunks; this renders it on the host and
-      # fails if any control, the Save button or the closing tag is missing.
+      # fails if any control, the Save button or the closing tag is missing, or
+      # if a page goes out in more than about one chunk per KB (each chunk is
+      # three TCP segments on the radar: sixty of them took 5 s), or if a
+      # client that stops reading is still written to after 10 s.
       - name: Render and check the settings page
         run: |
           g++ -std=gnu++17 -Wall -Wextra -Werror \
@@ -87,6 +91,48 @@ jobs:
               src/util/coords.cpp src/util/setup_text.cpp \
               -o /tmp/portal_page_test
           /tmp/portal_page_test
+
+  stack-usage:
+    name: Stack frames within limits
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # scripts/version.py: git describe, as in build.yml
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.platformio/.cache
+            .pio/libdeps
+          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            ${{ runner.os }}-pio-
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PlatformIO
+        run: pip install platformio==6.2.0
+
+      # The check itself, on .su lines written by the tests: every frame is
+      # checked, including each of a file's route invokers, which GCC writes
+      # under one name.
+      - name: Test the stack check
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+
+      # The pages, the screens and the Wi-Fi setup share loopTask's 8 KB of
+      # stack; v2.0.13's settings page overflowed it with one 3.5 KB frame and
+      # the radar rebooted. Builds the firmware with -fstack-usage (into
+      # .pio/stack-usage) and fails on any function of src/ or include/ over
+      # its limit: 1024 bytes, 512 in the portal pages.
+      - name: Build with -fstack-usage and check every frame
+        run: python3 scripts/check_stack_usage.py
 
   no-logos:
     name: No airline logos in the repository

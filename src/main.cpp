@@ -20,6 +20,7 @@
 #include "services/ota.h"
 #include "services/routes.h"
 #include "services/radar_location.h"
+#include "services/welcome.h"
 #include "services/wifi_setup.h"
 #include "ui/alert.h"
 #include "ui/info_card.h"
@@ -27,6 +28,7 @@
 #include "ui/radar_range.h"
 #include "ui/status_screens.h"
 #include "ui/trails.h"
+#include "util/setup_text.h"
 
 namespace {
 
@@ -64,13 +66,24 @@ void showInfoScreen() {
 }
 
 /** A setup screen shown in place of the radar while Wi-Fi is up. */
-enum class SetupScreen : uint8_t { kNone, kLocationStep, kLocationSaved };
+enum class SetupScreen : uint8_t { kNone, kLocationStep, kLocationSaved, kWelcome };
 SetupScreen g_setup_screen = SetupScreen::kNone;
-/** The address setup step 2 shows; drawn again if DHCP hands out another. */
+/** The address setup step 2 or the welcome shows; drawn again if DHCP hands out another. */
 uint32_t g_setup_screen_ip = 0;
 /** "Location saved" stays up until then. */
 unsigned long g_location_saved_until_ms = 0;
 constexpr unsigned long kLocationSavedScreenMs = 3000;
+
+/**
+ * The welcome (services::welcome) is still to come or up this boot; decided
+ * in setup(). The radar is not drawn meanwhile.
+ */
+bool g_welcome_pending = false;
+/** When the welcome first appeared; 0 = not yet. Its time runs on behind "Wi-Fi lost". */
+unsigned long g_welcome_since_ms = 0;
+/** A tap on the welcome, for showWelcome(). */
+bool g_welcome_tapped = false;
+constexpr unsigned long kWelcomeShowMs = 3UL * 60UL * 1000UL;
 
 /** Pin the core clock to its maximum; see config::kCpuFreqFullMhz. */
 void applyCpuClock() {
@@ -79,8 +92,14 @@ void applyCpuClock() {
                 static_cast<unsigned>(getCpuFrequencyMhz()));
 }
 
-/** Chip temperature to the serial log, so power tuning can be measured. */
-void logChipTemperature() {
+/**
+ * Chip temperature to the serial log, so power tuning can be measured, with
+ * the heap and the least stack each task has had left since boot (bytes).
+ * "loop stack left" is loopTask's 8 KB, which the web pages share with
+ * everything else on the main loop. Not inlined: its printf's arguments would
+ * widen loop()'s frame, which is under every web request.
+ */
+__attribute__((noinline)) void logChipTemperature() {
   if (millis() - g_last_temp_log_ms < config::kTempLogIntervalMs) {
     return;
   }
@@ -90,7 +109,7 @@ void logChipTemperature() {
   if (temp_sensor_read_celsius(&celsius) == ESP_OK) {
     const unsigned long last = services::adsb::lastUpdateMs();
     Serial.printf("Chip temperature: %.1f C, heap free %u (largest %u, min %u), "
-                  "fetch task %s (stack left %u), last data %s%lu s%s\n",
+                  "fetch task %s (stack left %u), loop stack left %u, last data %s%lu s%s\n",
                   celsius, static_cast<unsigned>(ESP.getFreeHeap()),
                   static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)),
                   static_cast<unsigned>(ESP.getMinFreeHeap()),
@@ -98,6 +117,7 @@ void logChipTemperature() {
                   g_adsb_task != nullptr
                       ? static_cast<unsigned>(uxTaskGetStackHighWaterMark(g_adsb_task))
                       : 0u,
+                  static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)),
                   last == 0 ? "never (up " : "",
                   (millis() - last) / 1000, last == 0 ? ")" : " ago");
   }
@@ -114,8 +134,9 @@ void initTemperatureSensor() {
 
 void showRadarIfConnected() {
   // Without a location the radar would show the default's sky; setup step 2
-  // asks for one instead (showSetupScreens).
-  if (WiFi.status() != WL_CONNECTED || !services::location::isSet()) {
+  // asks for one instead (showSetupScreens). A new owner's welcome comes
+  // before the radar too.
+  if (WiFi.status() != WL_CONNECTED || !services::location::isSet() || g_welcome_pending) {
     g_radar_visible = false;
     return;
   }
@@ -167,6 +188,10 @@ void handleBootButton() {
     showInfoScreen();
     return;
   }
+  if (tap && g_setup_screen == SetupScreen::kWelcome) {
+    g_welcome_tapped = true;  // skips the welcome, and changes nothing else
+    return;
+  }
   // A tap changes the range only where the range can be seen: on a setup or
   // "Wi-Fi lost" screen it would change it unseen, behind the message.
   if (tap && g_radar_visible) {
@@ -175,10 +200,56 @@ void handleBootButton() {
 }
 
 /**
+ * The welcome, once, for a new owner: in place of the radar, a QR code for
+ * the guide page. It goes on a tap, when the guide is opened, or after
+ * kWelcomeShowMs, and is then recorded as shown. Flights are fetched behind
+ * it all the while, so the radar has planes to show the moment it goes. The
+ * radar's first frame, one of an update's trial conditions, waits those three
+ * minutes at most: well inside the 15 a trial runs before it can be confirmed,
+ * and an update that starts meanwhile takes the screen as usual (loop()).
+ * True while it owns the screen.
+ */
+bool showWelcome() {
+  if (!g_welcome_pending) {
+    g_setup_screen = SetupScreen::kNone;
+    return false;
+  }
+  const unsigned long now = millis();
+  if (g_welcome_since_ms == 0) {
+    g_welcome_since_ms = now != 0 ? now : 1;
+  }
+  // A guide opened earlier this boot counts: it is what the welcome is for.
+  const util::setup::WelcomeEnd end =
+      util::setup::welcomeEnd(g_welcome_since_ms, now, g_welcome_tapped,
+                              services::welcome::consumeGuideOpened(), kWelcomeShowMs);
+  if (end != util::setup::WelcomeEnd::kNotYet) {
+    static const char* const kWhy[] = {"", "tapped", "guide opened", "timed out"};
+    Serial.printf("Welcome over (%s)\n", kWhy[static_cast<uint8_t>(end)]);
+    services::welcome::markShown();
+    g_welcome_pending = false;
+    g_welcome_tapped = false;
+    g_setup_screen = SetupScreen::kNone;
+    return false;  // the radar is drawn on this same pass
+  }
+  const uint32_t ip = static_cast<uint32_t>(WiFi.localIP());
+  if (g_setup_screen != SetupScreen::kWelcome || ip != g_setup_screen_ip) {
+    // As on step 2: the frame buffer is taken while the heap is still whole.
+    ui::radarDisplayReserve();
+    statusScreenWelcome(services::welcome::name(), WiFi.localIP().toString().c_str());
+    g_setup_screen = SetupScreen::kWelcome;
+    g_setup_screen_ip = ip;
+    g_radar_visible = false;
+  }
+  statusScreenHoldOverlay(bootButtonHeldMs());
+  return true;
+}
+
+/**
  * Setup step 2 and the confirmation after it, in place of the radar while
  * Wi-Fi is up: with no location saved the screen asks for one (a QR code for
  * the settings page), and any save says for a few seconds where the radar now
- * looks. True while one of them owns the screen.
+ * looks. Then, once, a new owner's welcome. True while one of them owns the
+ * screen.
  */
 bool showSetupScreens() {
   services::geocode::applyResult();  // a town lookup that has just finished
@@ -203,8 +274,7 @@ bool showSetupScreens() {
     g_setup_screen = SetupScreen::kNone;
   }
   if (services::location::isSet()) {
-    g_setup_screen = SetupScreen::kNone;
-    return false;
+    return showWelcome();
   }
   const uint32_t ip = static_cast<uint32_t>(WiFi.localIP());
   if (g_setup_screen != SetupScreen::kLocationStep || ip != g_setup_screen_ip) {
@@ -320,6 +390,8 @@ void setup() {
   services::ota::begin();
   bootButtonInit();
   services::location::init();
+  services::welcome::init();
+  g_welcome_pending = services::welcome::due();
   ui::radar::rangeInit();
   applyCpuClock();
   initTemperatureSensor();
@@ -390,7 +462,8 @@ void loop() {
       g_last_reconnect_ms = millis();
       if (wifiReconnect(g_wifi_down_since)) {
         g_wifi_down_since = 0;
-        // The attempt may have put up "Wi-Fi lost" over whatever was there.
+        // The attempt may have put up "Wi-Fi lost" over whatever was there
+        // (a setup screen or the welcome is drawn again on the next pass).
         g_setup_screen = SetupScreen::kNone;
         showRadarIfConnected();
       }
@@ -401,7 +474,7 @@ void loop() {
       g_wifi_down_since = 0;
     }
     if (showSetupScreens()) {
-      // Setup step 2, or "Location saved": the radar waits.
+      // Setup step 2, "Location saved" or the welcome: the radar waits.
     } else if (g_info_until_ms != 0) {
       // The info screen is up; handleBootButton() takes it down.
     } else if (!g_radar_visible) {

@@ -96,4 +96,84 @@ inline bool oneOf(const char* value, const uint8_t* allowed, size_t count,
   return false;
 }
 
+/** Longest radar name kept, in characters (bytes too: it is plain ASCII). */
+constexpr size_t kMaxRadarName = 32;
+
+/**
+ * The plain stand-in for a phone keyboard's "smart" punctuation, given the
+ * third byte of its UTF-8 sequence E2 80 xx; nullptr for anything else.
+ * iPhones type ’ for ' by default, which must not make a name unsavable.
+ */
+inline const char* plainPunctuation(uint8_t third) {
+  switch (third) {
+    case 0x98:  // ‘
+    case 0x99:  // ’
+      return "'";
+    case 0x9C:  // “
+    case 0x9D:  // ”
+      return "\"";
+    case 0x93:  // – en dash
+    case 0x94:  // — em dash ("--" on an iPhone)
+      return "-";
+    case 0xA6:  // …
+      return "...";
+    default:
+      return nullptr;
+  }
+}
+
+/**
+ * The radar's own name from the settings form ("Ada's radar"), with the spaces
+ * at either end trimmed and curly quotes, dashes and the ellipsis made plain
+ * (plainPunctuation), into `out` (room for kMaxRadarName + 1). What is kept
+ * is only space to '~': that is every character the round screen's font has,
+ * so an accent or an emoji would be drawn as a gap. Anything else, or more
+ * than kMaxRadarName characters once made plain, returns false and leaves
+ * `out` untouched. Empty is valid: the radar has no name.
+ */
+inline bool radarName(const char* value, char* out, size_t len) {
+  if (value == nullptr || out == nullptr || len <= kMaxRadarName) {
+    return false;
+  }
+  // A hard bound on what is even looked at: the form's 32 characters are at
+  // most 96 bytes, every one of them curly.
+  constexpr size_t kMaxField = 128;
+  const size_t n = strnlen(value, kMaxField + 1);
+  if (n > kMaxField) {
+    return false;
+  }
+  size_t first = 0;
+  while (first < n && value[first] == ' ') {
+    ++first;
+  }
+  size_t end = n;
+  while (end > first && value[end - 1] == ' ') {
+    --end;
+  }
+  char clean[kMaxRadarName + 1];
+  size_t o = 0;
+  for (size_t i = first; i < end;) {
+    const auto c = static_cast<uint8_t>(value[i]);
+    char single[2] = {static_cast<char>(c), '\0'};
+    const char* plain = nullptr;
+    size_t used = 1;
+    if (c >= ' ' && c <= '~') {
+      plain = single;
+    } else if (c == 0xE2 && end - i >= 3 && static_cast<uint8_t>(value[i + 1]) == 0x80) {
+      plain = plainPunctuation(static_cast<uint8_t>(value[i + 2]));
+      used = 3;
+    }
+    const size_t plain_len = plain != nullptr ? std::strlen(plain) : 0;
+    if (plain == nullptr || o + plain_len > kMaxRadarName) {
+      return false;
+    }
+    std::memcpy(clean + o, plain, plain_len);
+    o += plain_len;
+    i += used;
+  }
+  clean[o] = '\0';
+  std::memcpy(out, clean, o + 1);
+  return true;
+}
+
 }  // namespace util::portal

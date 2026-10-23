@@ -6,8 +6,9 @@
 /**
  * Small pieces of the guided first-time setup that can be checked without a
  * board: what a failed join means, what the Wi-Fi QR code says, which network
- * names and passwords are worth trying, and text made safe for a page. Free of
- * Arduino headers so the host test suite can cover it (test/test_setup).
+ * names and passwords are worth trying, text made safe for a page, and when the
+ * welcome that follows setup goes. Free of Arduino headers so the host test
+ * suite can cover it (test/test_setup).
  */
 namespace util::setup {
 
@@ -49,5 +50,35 @@ bool plausiblePassword(const char* password);
  * or character that does not fit; always terminates.
  */
 void htmlEscape(const char* in, char* out, size_t len);
+
+/**
+ * What htmlEscape() writes for `c`: its entity ("&amp;"), or nullptr for a
+ * character that stands for itself. For escaping straight onto a page,
+ * without a buffer as long as the escaped text.
+ */
+const char* htmlEntity(char c);
+
+/**
+ * `in` for markup that a script puts on the page from a single-quoted string
+ * (the hotspot's step header): as htmlEscape, plus \ as an entity and control
+ * characters left out, so the text can end neither the string nor the line.
+ */
+void htmlEscapeInScript(const char* in, char* out, size_t len);
+
+/** Why the one-time welcome screen goes, or kNotYet while it stays. */
+enum class WelcomeEnd : uint8_t {
+  kNotYet,
+  kTapped,       // a tap on the button skips it
+  kGuideOpened,  // the guide it points to was opened: it has done its job
+  kTimedOut,
+};
+
+/**
+ * The welcome, shown in place of the radar once for a new owner, ends on a
+ * tap, when its guide page is opened, or `show_ms` after it first appeared at
+ * `shown_at_ms` (millis(), across a wrap).
+ */
+WelcomeEnd welcomeEnd(unsigned long shown_at_ms, unsigned long now_ms, bool tapped,
+                      bool guide_opened, unsigned long show_ms);
 
 }  // namespace util::setup
