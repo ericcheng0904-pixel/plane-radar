@@ -3,6 +3,26 @@
 Releases are installed over the air by radars running an earlier release
 (docs/OTA.md). Newest first.
 
+## v2.0.14
+
+- Fix: the radar restarted itself now and then (reason "low memory"), about
+  once in a day's running. Every HTTPS request needs two 16.7 KB record
+  buffers, and they were looked for anew each time. After hours of running,
+  the free memory was in smaller pieces, and a small block left in the one
+  piece that was still big enough made the next requests fail ("SSL - Memory
+  allocation failed"): three in a row restart the radar. The two buffers are
+  now set aside once, as the radar starts, and lent to every request. In
+  hardware fault tests, a heap cut into pieces that failed every request
+  before now keeps the flights coming.
+- A radar that really is short of memory still skips its requests and
+  restarts itself, as before. The bar is now the ~28 KB a request needs
+  besides the buffers, including Wi-Fi's share: a request begun with less in
+  a fault test starved Wi-Fi and timed out.
+- Fix: a certificate check that ran out of memory part way counted as the
+  server's certificate failing to verify, and six in a row would have
+  stopped the radar checking that server. It now counts as the radar being
+  short of memory.
+
 ## v2.0.13
 
 - A radar can have a name (Settings, Display: "Name of this radar", optional,

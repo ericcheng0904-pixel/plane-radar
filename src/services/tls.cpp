@@ -92,6 +92,12 @@ portMUX_TYPE s_slots_lock = portMUX_INITIALIZER_UNLOCKED;
 volatile bool s_reserve_wanted = false;
 /** A reserve that did not fit has been logged. Fetch task only. */
 bool s_reserve_failed = false;
+/**
+ * An mbedTLS allocation found no room since configure(), on any task. Inside
+ * a certificate check that surfaces as X509_FATAL_ERROR, just like a root
+ * the bundle does not know, so noteResult() asks this instead.
+ */
+volatile bool s_alloc_failed = false;
 
 /** mbedTLS's calloc() once the buffers are reserved: a slot for a record buffer. */
 void* reservedCalloc(size_t n, size_t size) {
@@ -99,7 +105,11 @@ void* reservedCalloc(size_t n, size_t size) {
   void* slot = s_slots.take(n, size);
   portEXIT_CRITICAL(&s_slots_lock);
   if (slot == nullptr) {
-    return idfMbedtlsCalloc(n, size);
+    void* block = idfMbedtlsCalloc(n, size);
+    if (block == nullptr && n != 0 && size != 0) {
+      s_alloc_failed = true;
+    }
+    return block;
   }
   memset(slot, 0, kRecordBytes);
   return slot;
@@ -163,6 +173,7 @@ size_t indexOf(Host host) { return static_cast<size_t>(host); }
 
 void configure(WiFiClientSecure& client, Host host, uint32_t read_timeout_ms) {
   reserveIfWanted();
+  s_alloc_failed = false;
   if (s_verify[indexOf(host)]) {
     client.setCACertBundle(kCertBundle);
   } else {
@@ -191,10 +202,13 @@ bool noteResult(WiFiClientSecure& client, Host host, int http_code) {
     return false;  // no TLS error: DNS, TCP or a handshake timeout
   }
   Serial.printf("tls: %s: %s (-0x%04x)\n", kHostNames[i], msg, -err);
-  if (err == MBEDTLS_ERR_SSL_ALLOC_FAILED) {
+  if (err == MBEDTLS_ERR_SSL_ALLOC_FAILED || s_alloc_failed) {
     // Without the reserve, enoughMemory() can only see the largest block and
     // the record buffers need two; with it, the rest of the session did not
-    // fit. The health check restarts the radar after a few of these.
+    // fit (a web page being sent at the same time can take ~15 KB). Not the
+    // server's certificate either, when the check of it ran out: it must not
+    // count toward giving up on checking. The health check restarts the
+    // radar after a few of these.
     noteNoRoom();
     return true;
   }
