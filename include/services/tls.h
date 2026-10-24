@@ -80,16 +80,16 @@ void reserveRecordBuffers();
  * besides the reserved buffers and a page being sent ~15 KB more (lwIP's send
  * buffer and Wi-Fi's copies of its frames): the two at once left ~1 KB free in
  * a test that loaded pages during fetches, too little for Wi-Fi, and pages
- * came out cut short. The fetch task holds the turn for each pass of network
- * work; the main loop serves pages only when it can have it, so a request
- * waits a moment in the backlog instead.
+ * came out cut short. The fetch task holds the turn for each HTTPS session
+ * (with an update check or a town search, for its whole pass); the main loop serves pages only when it can have it, so a request
+ * waits in the backlog for one session at most (~0.5-2 s).
  *
- * Fetch task, before a pass: waits up to 1.5 s for a page being sent to
+ * Fetch task, before a session: waits up to 1 s for a page being sent to
  * finish, then goes ahead anyway (a slow client must not hold the radar's
- * flights up), and up to 1 s more for the page's send buffers to come back.
+ * flights up), and up to 0.5 s more for the page's send buffers to come back.
  */
 void beginSessions();
-/** Fetch task, after the pass. */
+/** Fetch task, after the session. */
 void endSessions();
 /** Main loop: whether web pages may be served now. If so, endPages() after. */
 bool beginPages();

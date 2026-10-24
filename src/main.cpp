@@ -331,22 +331,27 @@ void adsbFetchTask(void*) {
   unsigned long interval_ms = config::kAdsbFetchIntervalMs;
   for (;;) {
     services::health::checkFromFetchTask();
-    // Web pages wait while this pass talks to the network (services::tls).
+    // Web pages wait while a request is out, one at a time (services::tls).
     services::tls::beginSessions();
     // A town lookup from the settings page takes a pass of its own: one
     // connection at a time, never alongside an aircraft fetch.
     // An update check takes a pass of its own too (and restarts the radar
     // when it installs one).
     const bool looked_up = services::ota::runIfDue() || services::geocode::runPending();
+    services::tls::endSessions();
     // No location yet (setup step 2): there is no sky to fetch.
     if (!looked_up && WiFi.status() == WL_CONNECTED && services::location::isSet()) {
+      services::tls::beginSessions();
       const unsigned long started = millis();  // before the centre is read
       const services::adsb::FetchResult got =
           services::adsb::fetchUpdate(services::location::lat(), services::location::lon(),
                                       ui::radar::fetchRadiusKm(), started);
+      services::tls::endSessions();
       if (got == services::adsb::FetchResult::kAircraft) {
         interval_ms = config::kAdsbFetchIntervalMs;
+        services::tls::beginSessions();
         services::routes::refresh();  // origin/destination for new flights
+        services::tls::endSessions();
       } else if (got == services::adsb::FetchResult::kPaced) {
         // adsb.lol's ration holds the next request back: not a failure, and
         // looked at again at the usual interval, so aircraft come as soon as
@@ -358,7 +363,6 @@ void adsbFetchTask(void*) {
         Serial.printf("adsb: all feeds failing, next try in %lu s\n", interval_ms / 1000);
       }
     }
-    services::tls::endSessions();
     // The fetch an update check or a town lookup displaced is due: wait no
     // longer than the usual interval for it. Waiting a whole backoff after
     // such a pass as well put up to ~195 s between fetch attempts, and the
@@ -371,7 +375,8 @@ void adsbFetchTask(void*) {
     // and ~143 s with an update check (~40 s) or a town search taking the
     // next pass: well under 180 s. Even a DNS server taking its full 15 s
     // for every name keeps the worst inside it (~173 s), and so does a web
-    // page being sent as both passes begin (2.5 s each, ~178 s).
+    // page being sent before each of the four turns in that gap (1.5 s
+    // each, services::tls::beginSessions(): ~179 s).
     // Woken early by a lookup request or a newly saved location.
     services::geocode::idle(looked_up ? std::min(interval_ms, config::kAdsbFetchIntervalMs)
                                       : interval_ms);

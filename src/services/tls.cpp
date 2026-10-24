@@ -181,14 +181,20 @@ bool s_sessions_have_turn = false;
 /**
  * A page takes ~0.3 s to hand over, and its last ~11 KB (lwIP's send buffer
  * and Wi-Fi's copies of the frames) are given back only as the phone
- * acknowledges them. Each pass may wait this long for both, and a fetch can
- * follow two passes: see the gaps adsbFetchTask() keeps under the health
- * check's 180 s.
+ * acknowledges them. A session may wait this long for both, and a fetch can
+ * follow two passes of two sessions each: see the gaps adsbFetchTask() keeps
+ * under the health check's 180 s.
  */
-constexpr unsigned long kPageWaitMs = 1500;
-constexpr unsigned long kDrainWaitMs = 1000;
-/** Free heap at which a page's send buffers are taken to be back. */
-constexpr size_t kDrainedFreeHeap = kReservedMinFreeHeap + 8 * 1024;
+constexpr unsigned long kPageWaitMs = 1000;
+constexpr unsigned long kDrainWaitMs = 500;
+/**
+ * Free heap as the last session gave the turn back: a page's send buffers
+ * are back once the heap is within kDrainSlack of it again. Fetch task only.
+ */
+size_t s_free_after_sessions = 0;
+constexpr size_t kDrainSlack = 2 * 1024;
+/** Long enough for two passes of the main loop. */
+constexpr unsigned long kYieldMs = 30;
 
 }  // namespace
 
@@ -271,16 +277,21 @@ void beginSessions() {
                   kPageWaitMs / 1000, static_cast<unsigned>(ESP.getFreeHeap()));
     return;
   }
+  const size_t drained = s_free_after_sessions > kDrainSlack ? s_free_after_sessions - kDrainSlack : 0;
   const unsigned long since = millis();
-  while (ESP.getFreeHeap() < kDrainedFreeHeap && millis() - since < kDrainWaitMs) {
-    delay(50);
+  while (ESP.getFreeHeap() < drained && millis() - since < kDrainWaitMs) {
+    delay(20);
   }
 }
 
 void endSessions() {
   if (s_sessions_have_turn) {
     s_sessions_have_turn = false;
+    s_free_after_sessions = ESP.getFreeHeap();
     xSemaphoreGive(turn());
+    // A page waiting in the backlog goes next, not after the session that
+    // follows (a fetch's routes): the main loop asks for the turn every 10 ms.
+    delay(kYieldMs);
   }
 }
 
