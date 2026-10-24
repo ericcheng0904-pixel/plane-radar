@@ -29,19 +29,22 @@ struct Heaps {
  * Heap Wi-Fi can use that is left free while a document grows. Wi-Fi takes a
  * buffer for every frame it receives until lwIP and the TLS reader are done
  * with it: up to its 6-frame block-ack window, ~10 KB, of which the answer's
- * own 5.7 KB TCP window is part. The main loop's water mask (6 KB, built only
- * when the range or the place changes) is not reserved for: built during the
- * parse of a busy sky, it can cost Wi-Fi a few frames, which TCP sends again.
+ * own 5.7 KB TCP window is part. The 6 KB buffer the main loop borrows while
+ * it builds the water mask (only when the range or the place changes) is not
+ * reserved for: taken during the parse of a busy sky, it can cost Wi-Fi a few
+ * frames, which TCP sends again.
  *
- * ~81 KB is free at rest as ESP.getFreeHeap() counts it, ~7.5 KB of it the RTC
- * heap. The TLS session with HTTPClient and the filter takes ~45 KB (fault
- * tests: 36-38 KB left during a fetch), so a feed's answer starts with ~29 KB
- * of DRAM and the RTC heap. It is read one aircraft at a time, ~1.3 KB of
- * document each (1.8 KB of heap, its largest block 1 KB: services::adsb's
- * kAircraftBudget), given back before the next, so this reserve is only
- * reached when the heap was short before the request, and even then the RTC
- * heap can hold an aircraft. A real feed's certificate chain may take a
- * little more than the fault tests' mock: to be measured on the radar.
+ * ~45 KB is free at rest as ESP.getFreeHeap() counts it, ~7.5 KB of it the RTC
+ * heap, beside the 33 KB reserved for mbedTLS's record buffers. The rest of
+ * the TLS session with HTTPClient and the filter takes 12-15 KB (fault tests:
+ * ~28 KB left during a fetch, 7.5 KB of it the RTC heap), so a feed's answer
+ * starts with ~20 KB of DRAM and the RTC heap. It is read one aircraft at a
+ * time, ~1.3 KB of document each (1.8 KB of heap, its largest block 1 KB:
+ * services::adsb's kAircraftBudget), given back before the next, so this
+ * reserve is only reached when the heap was short before the request, and
+ * even then the RTC heap can hold an aircraft. A real feed's certificate
+ * chain may take a little more than the fault tests' mock: to be measured on
+ * the radar.
  */
 constexpr size_t kReserve = 10 * 1024;
 /**

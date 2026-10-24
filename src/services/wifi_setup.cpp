@@ -19,6 +19,7 @@
 #include "services/device_health.h"
 #include "services/portal_pages.h"
 #include "services/radar_location.h"
+#include "services/tls.h"
 #include "services/welcome.h"
 #include "ui/radar_range.h"
 #include "ui/status_screens.h"
@@ -934,7 +935,12 @@ void wifiLoop() {
     }
     if (s_wm.getWebPortalActive() || s_wm.getConfigPortalActive()) {
       bootButtonPollLongPress();
-      s_wm.process();
+      // Between HTTPS sessions: a page and a session at once leave Wi-Fi too
+      // little heap (services::tls::beginPages()).
+      if (services::tls::beginPages()) {
+        s_wm.process();
+        services::tls::endPages();
+      }
     }
   } else {
     stopLanWebPortal();

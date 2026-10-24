@@ -53,7 +53,8 @@ DEFAULT_SITE = ota_common.REPO_ROOT / "site"
 BOOT_APP0_IN_FRAMEWORK = Path("packages", "framework-arduinoespressif32", "tools", "partitions", "boot_app0.bin")
 
 # Free heap a radar should have before it starts an update: a TLS handshake
-# (services::tls asks for 48 KB) plus Update's 4 KB sector buffer and margin.
+# (services::tls asks for 48 KB when its record buffers are not reserved) plus
+# Update's 4 KB sector buffer and margin.
 DEFAULT_MIN_FREE_HEAP = 56 * 1024
 # The radar parses the manifest into a small fixed buffer.
 MANIFEST_MAX_BYTES = 1024

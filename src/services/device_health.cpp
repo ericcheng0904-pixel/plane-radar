@@ -96,7 +96,9 @@ void checkFromLoop() {
   }
   s_last_check_ms = now;
 
-  const size_t block = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+  // Of the heap Wi-Fi can use: the RTC heap's ~7.9 KB piece is free nearly
+  // always and would hide DRAM cut into pieces (util::health::Limits).
+  const size_t block = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_DMA);
   util::health::State s;
   s.now_ms = now;
   s.loop_heartbeat_ms = 0;  // the loop cannot judge itself; see checkFromFetchTask

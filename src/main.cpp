@@ -20,6 +20,7 @@
 #include "services/ota.h"
 #include "services/routes.h"
 #include "services/radar_location.h"
+#include "services/tls.h"
 #include "services/welcome.h"
 #include "services/wifi_setup.h"
 #include "ui/alert.h"
@@ -132,6 +133,18 @@ void initTemperatureSensor() {
 #endif
 }
 
+/**
+ * The radar's two big blocks, taken once and while the heap is still whole:
+ * the frame buffer (57.6 KB), then mbedTLS's record buffers (2 x 16.7 KB),
+ * which the fetch task sets aside before its next session (services::tls).
+ * Later calls cost nothing.
+ */
+void reserveMemory() {
+  if (ui::radarDisplayReserve()) {
+    services::tls::reserveRecordBuffers();
+  }
+}
+
 void showRadarIfConnected() {
   // Without a location the radar would show the default's sky; setup step 2
   // asks for one instead (showSetupScreens). A new owner's welcome comes
@@ -140,6 +153,7 @@ void showRadarIfConnected() {
     g_radar_visible = false;
     return;
   }
+  reserveMemory();
   ui::radarDisplayDraw();
   g_radar_visible = true;
   services::ota::noteRadarDrawn();
@@ -234,7 +248,7 @@ bool showWelcome() {
   const uint32_t ip = static_cast<uint32_t>(WiFi.localIP());
   if (g_setup_screen != SetupScreen::kWelcome || ip != g_setup_screen_ip) {
     // As on step 2: the frame buffer is taken while the heap is still whole.
-    ui::radarDisplayReserve();
+    reserveMemory();
     statusScreenWelcome(services::welcome::name(), WiFi.localIP().toString().c_str());
     g_setup_screen = SetupScreen::kWelcome;
     g_setup_screen_ip = ip;
@@ -278,7 +292,7 @@ bool showSetupScreens() {
   }
   const uint32_t ip = static_cast<uint32_t>(WiFi.localIP());
   if (g_setup_screen != SetupScreen::kLocationStep || ip != g_setup_screen_ip) {
-    ui::radarDisplayReserve();
+    reserveMemory();
     statusScreenLocationStep(WiFi.localIP().toString().c_str());
     g_setup_screen = SetupScreen::kLocationStep;
     g_setup_screen_ip = ip;
@@ -317,20 +331,27 @@ void adsbFetchTask(void*) {
   unsigned long interval_ms = config::kAdsbFetchIntervalMs;
   for (;;) {
     services::health::checkFromFetchTask();
+    // Web pages wait while a request is out, one at a time (services::tls).
+    services::tls::beginSessions();
     // A town lookup from the settings page takes a pass of its own: one
     // connection at a time, never alongside an aircraft fetch.
     // An update check takes a pass of its own too (and restarts the radar
     // when it installs one).
     const bool looked_up = services::ota::runIfDue() || services::geocode::runPending();
+    services::tls::endSessions();
     // No location yet (setup step 2): there is no sky to fetch.
     if (!looked_up && WiFi.status() == WL_CONNECTED && services::location::isSet()) {
+      services::tls::beginSessions();
       const unsigned long started = millis();  // before the centre is read
       const services::adsb::FetchResult got =
           services::adsb::fetchUpdate(services::location::lat(), services::location::lon(),
                                       ui::radar::fetchRadiusKm(), started);
+      services::tls::endSessions();
       if (got == services::adsb::FetchResult::kAircraft) {
         interval_ms = config::kAdsbFetchIntervalMs;
+        services::tls::beginSessions();
         services::routes::refresh();  // origin/destination for new flights
+        services::tls::endSessions();
       } else if (got == services::adsb::FetchResult::kPaced) {
         // adsb.lol's ration holds the next request back: not a failure, and
         // looked at again at the usual interval, so aircraft come as soon as
@@ -353,7 +374,10 @@ void adsbFetchTask(void*) {
     // gaps are then ~93 s after a failed fetch, ~75 s after one with routes,
     // and ~143 s with an update check (~40 s) or a town search taking the
     // next pass: well under 180 s. Even a DNS server taking its full 15 s
-    // for every name keeps the worst inside it (~173 s).
+    // for every name keeps the worst inside it (~173 s), and so does a web
+    // page being sent before each of the three turns in that gap (the update
+    // check's or town search's, the empty one that opens the next pass, and
+    // the fetch's; 1.5 s each, services::tls::beginSessions(): ~178 s).
     // Woken early by a lookup request or a newly saved location.
     services::geocode::idle(looked_up ? std::min(interval_ms, config::kAdsbFetchIntervalMs)
                                       : interval_ms);

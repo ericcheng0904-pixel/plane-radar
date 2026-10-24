@@ -18,7 +18,10 @@
  * that still works beats one that is correct and dark.
  *
  * One connection at a time: a handshake needs ~45 KB, and the C3 has room for
- * one. Fetch task only.
+ * one. Its two 16.7 KB record buffers are reserved once, as the radar starts
+ * (reserveRecordBuffers()), and lent to every session. Fetch task only, but
+ * for reserveRecordBuffers(), beginPages(), endPages(), noRoomInARow() and
+ * verifying(), which the main loop calls.
  */
 namespace services::tls {
 
@@ -45,14 +48,18 @@ bool noteResult(WiFiClientSecure& client, Host host, int http_code);
  * that failed for lack of memory, like a handshake that did not fit. A heap
  * too cut up for any handshake then ends in the low-memory restart
  * (util::health::Limits::tls_no_room), not in skips until the 30-minute
- * no-data one.
+ * no-data one. Not beside a web page (being sent, or sent in the last 2 s, or
+ * the session went ahead for want of the turn): the shortage is the page's,
+ * and the run stands as it was.
  */
 void noteNoRoom();
 
 /**
  * The request just reported to noteResult() got through the handshake, but
  * there was no room to read its answer: it counts as an attempt that failed
- * for lack of memory, as if noteResult() had not ended the run of them.
+ * for lack of memory, as if noteResult() had not ended the run of them. Not
+ * beside a web page, as for noteNoRoom(): the run then stands as it was before
+ * that handshake.
  */
 void noteNoRoomForAnswer();
 
@@ -61,6 +68,43 @@ uint8_t noRoomInARow();
 
 /** False once the radar has given up checking `host`'s certificates. */
 bool verifying(Host host);
+
+/**
+ * Main loop, as the radar starts, once the frame buffer is taken: from the
+ * next HTTPS session on, mbedTLS's two record buffers (2 x 16.7 KB) are set
+ * aside for good and lent to every session, instead of being found anew each
+ * time in a heap the radar's running cuts into smaller pieces. The fetch task
+ * takes them, before that session; the frame buffer comes first because it
+ * needs the larger block. Without room for them, sessions take the buffers
+ * from the heap, as before, and each later one tries again.
+ */
+void reserveRecordBuffers();
+
+/**
+ * HTTPS and the web pages take turns. A session needs 12-15 KB of heap
+ * besides the reserved buffers and a page being sent ~15 KB more (lwIP's send
+ * buffer and Wi-Fi's copies of its frames): the two at once left ~1 KB free in
+ * a test that loaded pages during fetches, too little for Wi-Fi, and pages
+ * came out cut short. The fetch task holds the turn for each HTTPS session
+ * (with an update check or a town search, for its whole pass), and the main
+ * loop serves pages only when it can have it: a page request waits in the
+ * backlog for one session at most (an ordinary fetch holds it ~4 s). A
+ * session that has held it for 8 s is waiting out a timeout, or is an update
+ * download (it has the frame buffer's memory), not streaming a flight answer,
+ * and pages are served beside it rather than leave a browser waiting up to
+ * half a minute. A shortage a session meets beside a page is the page's, and
+ * is not counted toward the low-memory restart.
+ *
+ * Fetch task, before a session: waits up to 1 s for a page being sent to
+ * finish, then goes ahead anyway (a slow client must not hold the radar's
+ * flights up), and up to 0.5 s more for the page's send buffers to come back.
+ */
+void beginSessions();
+/** Fetch task, after the session. */
+void endSessions();
+/** Main loop: whether web pages may be served now. If so, endPages() after. */
+bool beginPages();
+void endPages();
 
 /**
  * Whether a handshake can be afforded right now. Starting one without the

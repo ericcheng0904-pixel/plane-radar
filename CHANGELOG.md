@@ -3,6 +3,39 @@
 Releases are installed over the air by radars running an earlier release
 (docs/OTA.md). Newest first.
 
+## v2.0.14
+
+- Fix: the radar restarted itself now and then (reason "low memory"), about
+  once in a day's running. Every HTTPS request needs two 16.7 KB record
+  buffers, and they were looked for anew each time. After hours of running,
+  the free memory was in smaller pieces, and a small block left in the one
+  piece that was still big enough made the next requests fail ("SSL - Memory
+  allocation failed"): three in a row restart the radar. The two buffers are
+  now set aside once, as the radar starts, and lent to every request. In
+  hardware fault tests, a heap cut into pieces that failed every request
+  before now keeps the flights coming.
+- A radar that really is short of memory still skips its requests and
+  restarts itself, as before. The bar is now 28 KB free beside the buffers
+  and a 4 KB piece Wi-Fi can use: a request takes 12-15 KB and Wi-Fi needs
+  ~10 KB beside it, with some margin. In a fault test, a request begun with
+  24.5 KB starved Wi-Fi and timed out.
+- Fix: a certificate check that ran out of memory part way counted as the
+  server's certificate failing to verify, and six in a row would have
+  stopped the radar checking that server. With the buffers set aside, it now
+  counts as the radar being short of memory.
+- Fix: a web page loaded while the radar was fetching flights could leave
+  Wi-Fi almost no memory: the page came out cut short and the fetch failed.
+  The two now take turns, so a page asked for during a fetch waits for it (an
+  ordinary fetch takes about 4 seconds). A page asked for while a request is
+  waiting out a timeout, or an update is downloading, is served after 8
+  seconds. A request that finds no room while a page is being sent, or in the
+  2 seconds after, no longer counts toward the low-memory restart.
+- The low-memory restart now looks only at the memory Wi-Fi can use, and
+  waits for its largest free piece to stay under 6.5 KB for a minute (was
+  8 KB of all memory). A small separate area of ~7.9 KB that Wi-Fi cannot use
+  would pass the new limit by itself. With the buffers set aside, ~9 KB is
+  normal, and nothing the radar asks for once running needs more than 6 KB.
+
 ## v2.0.13
 
 - A radar can have a name (Settings, Display: "Name of this radar", optional,

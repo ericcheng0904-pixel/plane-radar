@@ -38,15 +38,25 @@ struct Limits {
    */
   unsigned long no_data_resting_ms = 6UL * 3600UL * 1000UL;
   unsigned long wifi_settle_ms = 120000;    // Wi-Fi must be up this long first
-  size_t low_memory_block = 8 * 1024;
   /**
-   * HTTPS attempts in a row that found no room for mbedTLS's two 16.7 KB
-   * record buffers. Free memory can be plentiful but cut into pieces too
-   * small for them, and each failed try leaves a closed connection in the
-   * heap for two minutes that keeps it cut; a restart puts it back together.
-   * A flight fetch not sent for want of room for a handshake counts too,
-   * and so does a flight feed's answer with no room left to read one
-   * aircraft of it (NoRoomRun).
+   * The largest free piece of the heap Wi-Fi can use (DRAM: the RTC heap's
+   * ~7.9 KB piece would always pass) below this for low_memory_ms: the heap
+   * is cut too small for the largest block the radar asks for once running,
+   * the 6 KB crossings buffer borrowed while the water mask is built
+   * (ui::water; a session's largest is 2.3 KB). With mbedTLS's record buffers
+   * reserved at boot (services::tls), ~9 KB is DRAM's usual largest piece.
+   */
+  size_t low_memory_block = 6 * 1024 + 512;
+  /**
+   * HTTPS attempts in a row that found no room for a session. mbedTLS's two
+   * 16.7 KB record buffers are reserved at boot (services::tls), so this is
+   * the ~28 KB the rest of a session and Wi-Fi need beside it, or, if the
+   * reserve did not fit, the buffers themselves: free memory can be
+   * plentiful but cut into pieces too small for them, and each failed try
+   * leaves a closed connection in the heap for two minutes that keeps it
+   * cut; a restart puts it back together. A flight fetch not sent for want
+   * of room for a handshake counts too, and so does a flight feed's answer
+   * with no room left to read one aircraft of it (NoRoomRun).
    */
   uint8_t tls_no_room = 3;
   unsigned long low_memory_ms = 60000;
@@ -101,6 +111,11 @@ class NoRoomRun {
   }
   /** The request whose handshake just went through had no room for its answer. */
   void noRoomForAnswer() { in_a_row_ = bump(before_handshake_); }
+  /**
+   * The same, but not counted (a web page had the heap): the run stands as
+   * it did before that handshake, neither longer nor wiped.
+   */
+  void answerUncounted() { in_a_row_ = before_handshake_; }
   uint8_t inARow() const { return in_a_row_; }
 
  private:
