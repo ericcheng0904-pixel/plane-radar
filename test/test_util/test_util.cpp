@@ -501,6 +501,19 @@ void test_no_room_run_ends_only_with_an_answer_read() {
   TEST_ASSERT_EQUAL_UINT8(1, run.inARow());
 }
 
+// No room for an answer while a web page shares the heap is the page's: it
+// neither counts nor wipes the strikes before it (services::tls).
+void test_no_room_beside_a_page_leaves_the_run_as_it_was() {
+  util::health::NoRoomRun run;
+  run.noRoom();
+  run.noRoom();
+  run.handshakeDone();
+  run.answerUncounted();
+  TEST_ASSERT_EQUAL_UINT8(2, run.inARow());
+  run.noRoom();  // the next real one still makes three
+  TEST_ASSERT_EQUAL_UINT8(3, run.inARow());
+}
+
 void test_health_daily_restart() {
   auto s = healthy();
   s.now_ms = 24UL * 60 * kMin + 1;
@@ -787,6 +800,7 @@ int main(int, char**) {
   RUN_TEST(test_health_restarts_when_https_finds_no_room);
   RUN_TEST(test_health_counts_requests_skipped_for_no_room);
   RUN_TEST(test_no_room_run_ends_only_with_an_answer_read);
+  RUN_TEST(test_no_room_beside_a_page_leaves_the_run_as_it_was);
   RUN_TEST(test_health_daily_restart);
   RUN_TEST(test_route_cache_remembers_and_expires);
   RUN_TEST(test_route_cache_unknown_is_retried_sooner);

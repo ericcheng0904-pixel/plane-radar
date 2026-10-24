@@ -216,19 +216,41 @@ constexpr unsigned long kPageHoldMaxMs = 8000;
 volatile unsigned long s_sessions_since_ms = 0;
 /** The main loop has the turn (not serving beside a long session). Main loop only. */
 bool s_pages_have_turn = false;
-/** A web page is being served, with the turn or beside a long session. */
-volatile bool s_page_in_flight = false;
 /**
- * The fetch task's current session shares the heap with a web page: it went
- * ahead without the turn, or a page is served beside it. A shortage it meets
- * is the page's, not a heap cut into pieces, and is not counted toward the
- * low-memory restart. Cleared as each session begins.
+ * The main loop is in the web server, with the turn or beside a long session,
+ * since s_page_since_ms. It asks every ~10 ms, and a pass with no browser
+ * there takes ~1 ms: only one that lasts kPageRealMs is a page being sent.
  */
+volatile bool s_page_in_flight = false;
+volatile unsigned long s_page_since_ms = 0;
+constexpr unsigned long kPageRealMs = 10;
+/**
+ * When the last real page was handed over. Its send buffers (~11 KB) are
+ * given back only as the phone acknowledges them: for kPageAfterMs a
+ * shortage is still the page's.
+ */
+volatile unsigned long s_page_done_ms = 0;
+constexpr unsigned long kPageAfterMs = 2000;
+/** The fetch task's current session went ahead without the turn. */
 volatile bool s_session_shared = false;
 
-/** Whether a shortage just met counts toward the low-memory restart. */
+bool pageBeingSent() {
+  return s_page_in_flight && millis() - s_page_since_ms >= kPageRealMs;
+}
+
+/** A web page has the heap now, or had it a moment ago. */
+bool pageShares() {
+  const unsigned long done = s_page_done_ms;
+  return pageBeingSent() || (done != 0 && millis() - done < kPageAfterMs);
+}
+
+/**
+ * Whether a shortage just met counts toward the low-memory restart: not one
+ * met while a web page shares the heap, which is the page's and not a heap
+ * cut into pieces.
+ */
 bool countsAsNoRoom() {
-  if (s_session_shared) {
+  if (s_session_shared || pageShares()) {
     Serial.println("tls: no room beside a web page - not counted");
     return false;
   }
@@ -303,10 +325,11 @@ void noteNoRoom() {
 }
 
 void noteNoRoomForAnswer() {
-  if (!countsAsNoRoom()) {
-    return;
+  if (countsAsNoRoom()) {
+    s_no_room_run.noRoomForAnswer();
+  } else {
+    s_no_room_run.answerUncounted();
   }
-  s_no_room_run.noRoomForAnswer();
   s_no_room = s_no_room_run.inARow();
 }
 
@@ -322,14 +345,14 @@ void beginSessions() {
   s_sessions_have_turn = xSemaphoreTake(turn(), pdMS_TO_TICKS(kPageWaitMs)) == pdTRUE;
   // A page served beside the last, long session may still be going out:
   // waited for in the same budget.
-  while (s_sessions_have_turn && s_page_in_flight && millis() - start < kPageWaitMs) {
+  while (s_sessions_have_turn && pageBeingSent() && millis() - start < kPageWaitMs) {
     delay(20);
   }
   if (s_sessions_have_turn) {
     const unsigned long now = millis();
     s_sessions_since_ms = now != 0 ? now : 1;
   }
-  if (!s_sessions_have_turn || s_page_in_flight) {
+  if (!s_sessions_have_turn || pageBeingSent()) {
     s_session_shared = true;
     Serial.printf("tls: a web page held the network for %lu s - going ahead (free %u)\n",
                   kPageWaitMs / 1000, static_cast<unsigned>(ESP.getFreeHeap()));
@@ -346,7 +369,7 @@ void endSessions() {
   if (s_sessions_have_turn) {
     s_sessions_have_turn = false;
     s_sessions_since_ms = 0;
-    if (!s_session_shared) {
+    if (!pageShares()) {
       // Not while a page's send buffers are out: that level is not one to
       // wait for.
       s_free_after_sessions = ESP.getFreeHeap();
@@ -365,13 +388,17 @@ bool beginPages() {
     if (since == 0 || millis() - since < kPageHoldMaxMs) {
       return false;
     }
-    s_session_shared = true;
   }
+  s_page_since_ms = millis();
   s_page_in_flight = true;
   return true;
 }
 
 void endPages() {
+  if (pageBeingSent()) {
+    const unsigned long now = millis();
+    s_page_done_ms = now != 0 ? now : 1;
+  }
   s_page_in_flight = false;
   if (s_pages_have_turn) {
     s_pages_have_turn = false;

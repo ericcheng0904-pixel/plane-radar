@@ -110,6 +110,11 @@ class NoRoomRun {
   }
   /** The request whose handshake just went through had no room for its answer. */
   void noRoomForAnswer() { in_a_row_ = bump(before_handshake_); }
+  /**
+   * The same, but not counted (a web page had the heap): the run stands as
+   * it did before that handshake, neither longer nor wiped.
+   */
+  void answerUncounted() { in_a_row_ = before_handshake_; }
   uint8_t inARow() const { return in_a_row_; }
 
  private:
