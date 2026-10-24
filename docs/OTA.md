@@ -190,7 +190,8 @@ certificate chain on GitHub's side, and the signature, the version marker and
 
 1. **Preconditions.** `kOtaPublicKeyIsPlaceholder` is false;
    `config::kFirmwareVersion` is a release; `esp_ota_get_next_update_partition(NULL)`
-   is not `NULL`; Wi-Fi is up; free heap ≥ the larger of the last manifest's
+   is not `NULL`; Wi-Fi is up. After the manifest, and once the main loop has
+   handed back the frame buffer: free heap ≥ the larger of the manifest's
    `min_free_heap_hint` and 56 KB, and `services::tls::enoughMemory()`.
 2. **Fetch the manifest** over HTTPS with `config::kUserAgent`, a 12 s
    handshake and 10 s read timeout, and the `Accept-Encoding: identity` that
@@ -303,7 +304,7 @@ means the next image has to go on over USB.
 
 ## Memory and time
 
-- Steady free heap is ~45 KB with a largest block of ~12 KB, beside the 33 KB
+- Steady free heap is ~45 KB with a largest block of ~9-16 KB, beside the 33 KB
   reserved at boot for mbedTLS's two record buffers (since v2.0.14; before,
   ~81 KB with a largest block of ~35–39 KB). The update gets the frame
   buffer's 57.6 KB on top. The TLS handshake takes the reserved buffers and

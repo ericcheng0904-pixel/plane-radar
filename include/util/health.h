@@ -41,8 +41,9 @@ struct Limits {
   /**
    * The largest free piece of the heap Wi-Fi can use (DRAM: the RTC heap's
    * ~7.9 KB piece would always pass) below this for low_memory_ms: the heap
-   * is cut too small for the radar's largest block once running, the water
-   * mask (6 KB; a session's largest is 2.3 KB). With mbedTLS's record buffers
+   * is cut too small for the largest block the radar asks for once running,
+   * the 6 KB crossings buffer borrowed while the water mask is built
+   * (ui::water; a session's largest is 2.3 KB). With mbedTLS's record buffers
    * reserved at boot (services::tls), ~9 KB is DRAM's usual largest piece.
    */
   size_t low_memory_block = 6 * 1024 + 512;

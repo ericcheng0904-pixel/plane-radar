@@ -20,7 +20,8 @@
  * One connection at a time: a handshake needs ~45 KB, and the C3 has room for
  * one. Its two 16.7 KB record buffers are reserved once, as the radar starts
  * (reserveRecordBuffers()), and lent to every session. Fetch task only, but
- * for reserveRecordBuffers().
+ * for reserveRecordBuffers(), beginPages(), endPages(), noRoomInARow() and
+ * verifying(), which the main loop calls.
  */
 namespace services::tls {
 
@@ -47,14 +48,18 @@ bool noteResult(WiFiClientSecure& client, Host host, int http_code);
  * that failed for lack of memory, like a handshake that did not fit. A heap
  * too cut up for any handshake then ends in the low-memory restart
  * (util::health::Limits::tls_no_room), not in skips until the 30-minute
- * no-data one.
+ * no-data one. Not beside a web page (being sent, or sent in the last 2 s, or
+ * the session went ahead for want of the turn): the shortage is the page's,
+ * and the run stands as it was.
  */
 void noteNoRoom();
 
 /**
  * The request just reported to noteResult() got through the handshake, but
  * there was no room to read its answer: it counts as an attempt that failed
- * for lack of memory, as if noteResult() had not ended the run of them.
+ * for lack of memory, as if noteResult() had not ended the run of them. Not
+ * beside a web page, as for noteNoRoom(): the run then stands as it was before
+ * that handshake.
  */
 void noteNoRoomForAnswer();
 
@@ -84,10 +89,11 @@ void reserveRecordBuffers();
  * (with an update check or a town search, for its whole pass), and the main
  * loop serves pages only when it can have it: a page request waits in the
  * backlog for one session at most (an ordinary fetch holds it ~4 s). A
- * session that has held it for 8 s is waiting out a timeout, not streaming an
- * answer, and pages are served beside it rather than leave a browser waiting
- * up to half a minute. A shortage a session meets beside a page is the
- * page's, and is not counted toward the low-memory restart.
+ * session that has held it for 8 s is waiting out a timeout, or is an update
+ * download (it has the frame buffer's memory), not streaming a flight answer,
+ * and pages are served beside it rather than leave a browser waiting up to
+ * half a minute. A shortage a session meets beside a page is the page's, and
+ * is not counted toward the low-memory restart.
  *
  * Fetch task, before a session: waits up to 1 s for a page being sent to
  * finish, then goes ahead anyway (a slow client must not hold the radar's

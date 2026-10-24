@@ -440,15 +440,16 @@ void test_health_restarts_on_lasting_low_memory() {
 }
 
 // With mbedTLS's record buffers reserved at boot, the largest free piece sits
-// at ~9 KB for days on the radar, and nothing it asks for once running needs
-// more than the water mask's 6 KB: a piece that size is not low memory.
+// at ~9 KB for a day on the radar, and nothing it asks for once running needs
+// more than the 6 KB the water mask is built with: a piece that size is not
+// low memory.
 void test_health_tolerates_the_reserved_heaps_largest_piece() {
   auto s = healthy();
   s.largest_free_block = 7 * 1024 + 512;
   s.low_memory_since_ms = s.now_ms - 2 * 60 * kMin;
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Reason::kNone),
                           static_cast<uint8_t>(util::health::check(s)));
-  // Too small for the water mask, for over a minute: restart.
+  // Too small for the water mask's 6 KB buffer, for over a minute: restart.
   s.largest_free_block = 6 * 1024;
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(Reason::kLowMemory),
                           static_cast<uint8_t>(util::health::check(s)));

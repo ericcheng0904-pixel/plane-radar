@@ -94,9 +94,10 @@ volatile bool s_reserve_wanted = false;
 /** A reserve that did not fit has been logged. Fetch task only. */
 bool s_reserve_failed = false;
 /**
- * An mbedTLS allocation found no room since configure(), on any task. Inside
- * a certificate check that surfaces as X509_FATAL_ERROR, just like a root
- * the bundle does not know, so noteResult() asks this instead.
+ * An mbedTLS allocation found no room since configure(), on any task. Set by
+ * the reserve's allocator, so only with the buffers set aside. Inside a
+ * certificate check that surfaces as X509_FATAL_ERROR, just like a root the
+ * bundle does not know, so noteResult() asks this instead.
  */
 volatile bool s_alloc_failed = false;
 
@@ -188,9 +189,11 @@ bool s_sessions_have_turn = false;
 /**
  * A page takes ~0.3 s to hand over, and its last ~11 KB (lwIP's send buffer
  * and Wi-Fi's copies of the frames) are given back only as the phone
- * acknowledges them. A session may wait this long for both, and a fetch can
- * follow two passes of two sessions each: see the gaps adsbFetchTask() keeps
- * under the health check's 180 s.
+ * acknowledges them. A session waits up to kPageWaitMs for the turn and the
+ * page, then up to kDrainWaitMs for those buffers: 1.5 s at most. Between two
+ * fetch attempts the fetch task can wait up to four times (three in the
+ * longest gap): see the gaps adsbFetchTask() keeps under the health check's
+ * 180 s.
  */
 constexpr unsigned long kPageWaitMs = 1000;
 constexpr unsigned long kDrainWaitMs = 500;
@@ -204,11 +207,12 @@ constexpr size_t kDrainSlack = 2 * 1024;
 constexpr unsigned long kYieldMs = 30;
 /**
  * A session holding the turn longer than this is waiting out a timeout
- * (connect 5 s, handshake 12 s, headers and body 8 s each), not streaming
- * an answer: pages are served beside it, as before the turns, rather than
- * leave a browser waiting half a minute. Measured on the radar: an ordinary
- * flight fetch holds it 3.7-4.1 s, a route lookup that times out 6 s. Lower
- * and pages share the heap with ordinary fetches again (at 3 s the heap
+ * (connect 5 s, handshake 12 s, headers and body 8 s each) or is an update
+ * download (it has the frame buffer's memory), not streaming a flight answer:
+ * pages are served beside it, as before the turns, rather than leave a
+ * browser waiting half a minute. Measured on the radar: an ordinary flight
+ * fetch holds it 3.7-4.1 s, a route lookup whose connection times out 6 s.
+ * Lower and pages share the heap with ordinary fetches again (at 3 s the heap
  * Wi-Fi can use fell to ~1 KB under page loads, as without the turns).
  */
 constexpr unsigned long kPageHoldMaxMs = 8000;
@@ -302,9 +306,10 @@ bool noteResult(WiFiClientSecure& client, Host host, int http_code) {
     // Without the reserve, enoughMemory() can only see the largest block and
     // the record buffers need two; with it, the rest of the session did not
     // fit (a web page being sent at the same time can take ~15 KB). Not the
-    // server's certificate either, when the check of it ran out: it must not
-    // count toward giving up on checking. The health check restarts the
-    // radar after a few of these.
+    // server's certificate either, when the check of it ran out (known only
+    // with the buffers set aside, s_alloc_failed): it must not count toward
+    // giving up on checking. The health check restarts the radar after a few
+    // of these.
     noteNoRoom();
     return true;
   }
