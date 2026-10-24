@@ -195,6 +195,17 @@ size_t s_free_after_sessions = 0;
 constexpr size_t kDrainSlack = 2 * 1024;
 /** Long enough for two passes of the main loop. */
 constexpr unsigned long kYieldMs = 30;
+/**
+ * A session holding the turn longer than this is waiting out a timeout
+ * (connect 5 s, handshake 12 s, headers and body 8 s each), not streaming
+ * an answer: pages are served beside it, as before the turns, rather than
+ * leave a browser waiting half a minute.
+ */
+constexpr unsigned long kPageHoldMaxMs = 3000;
+/** When the fetch task took the turn; 0 while it does not have it. */
+volatile unsigned long s_sessions_since_ms = 0;
+/** The main loop has the turn (not serving beside a long session). Main loop only. */
+bool s_pages_have_turn = false;
 
 }  // namespace
 
@@ -272,6 +283,10 @@ void reserveRecordBuffers() { s_reserve_wanted = true; }
 
 void beginSessions() {
   s_sessions_have_turn = xSemaphoreTake(turn(), pdMS_TO_TICKS(kPageWaitMs)) == pdTRUE;
+  if (s_sessions_have_turn) {
+    const unsigned long now = millis();
+    s_sessions_since_ms = now != 0 ? now : 1;
+  }
   if (!s_sessions_have_turn) {
     Serial.printf("tls: a web page held the network for %lu s - going ahead (free %u)\n",
                   kPageWaitMs / 1000, static_cast<unsigned>(ESP.getFreeHeap()));
@@ -287,6 +302,7 @@ void beginSessions() {
 void endSessions() {
   if (s_sessions_have_turn) {
     s_sessions_have_turn = false;
+    s_sessions_since_ms = 0;
     s_free_after_sessions = ESP.getFreeHeap();
     xSemaphoreGive(turn());
     // A page waiting in the backlog goes next, not after the session that
@@ -295,9 +311,21 @@ void endSessions() {
   }
 }
 
-bool beginPages() { return xSemaphoreTake(turn(), 0) == pdTRUE; }
+bool beginPages() {
+  s_pages_have_turn = xSemaphoreTake(turn(), 0) == pdTRUE;
+  if (s_pages_have_turn) {
+    return true;
+  }
+  const unsigned long since = s_sessions_since_ms;
+  return since != 0 && millis() - since >= kPageHoldMaxMs;
+}
 
-void endPages() { xSemaphoreGive(turn()); }
+void endPages() {
+  if (s_pages_have_turn) {
+    s_pages_have_turn = false;
+    xSemaphoreGive(turn());
+  }
+}
 
 bool enoughMemory() {
   portENTER_CRITICAL(&s_slots_lock);

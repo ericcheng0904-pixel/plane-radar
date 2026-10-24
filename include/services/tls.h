@@ -81,8 +81,11 @@ void reserveRecordBuffers();
  * buffer and Wi-Fi's copies of its frames): the two at once left ~1 KB free in
  * a test that loaded pages during fetches, too little for Wi-Fi, and pages
  * came out cut short. The fetch task holds the turn for each HTTPS session
- * (with an update check or a town search, for its whole pass); the main loop serves pages only when it can have it, so a request
- * waits in the backlog for one session at most (~0.5-2 s).
+ * (with an update check or a town search, for its whole pass), and the main
+ * loop serves pages only when it can have it: a page request waits in the
+ * backlog for one session at most (~0.5-2 s). A session that has held it for
+ * 3 s is waiting out a timeout, not streaming an answer, and pages are served
+ * beside it rather than leave a browser waiting up to half a minute.
  *
  * Fetch task, before a session: waits up to 1 s for a page being sent to
  * finish, then goes ahead anyway (a slow client must not hold the radar's
