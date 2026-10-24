@@ -238,10 +238,17 @@ bool pageBeingSent() {
   return s_page_in_flight && millis() - s_page_since_ms >= kPageRealMs;
 }
 
-/** A web page has the heap now, or had it a moment ago. */
+/**
+ * A web page has the heap now, or had it a moment ago. Read in the opposite
+ * order to endPages()'s writes (it stamps the end, then clears in-flight), so
+ * a page ending between the two reads is still seen.
+ */
 bool pageShares() {
+  if (pageBeingSent()) {
+    return true;
+  }
   const unsigned long done = s_page_done_ms;
-  return pageBeingSent() || (done != 0 && millis() - done < kPageAfterMs);
+  return done != 0 && millis() - done < kPageAfterMs;
 }
 
 /**
