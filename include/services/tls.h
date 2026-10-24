@@ -83,9 +83,11 @@ void reserveRecordBuffers();
  * came out cut short. The fetch task holds the turn for each HTTPS session
  * (with an update check or a town search, for its whole pass), and the main
  * loop serves pages only when it can have it: a page request waits in the
- * backlog for one session at most (~0.5-2 s). A session that has held it for
- * 3 s is waiting out a timeout, not streaming an answer, and pages are served
- * beside it rather than leave a browser waiting up to half a minute.
+ * backlog for one session at most (an ordinary fetch holds it ~4 s). A
+ * session that has held it for 8 s is waiting out a timeout, not streaming an
+ * answer, and pages are served beside it rather than leave a browser waiting
+ * up to half a minute. A shortage a session meets beside a page is the
+ * page's, and is not counted toward the low-memory restart.
  *
  * Fetch task, before a session: waits up to 1 s for a page being sent to
  * finish, then goes ahead anyway (a slow client must not hold the radar's

@@ -39,10 +39,11 @@ struct Limits {
   unsigned long no_data_resting_ms = 6UL * 3600UL * 1000UL;
   unsigned long wifi_settle_ms = 120000;    // Wi-Fi must be up this long first
   /**
-   * The largest free piece below this for low_memory_ms: the heap is cut too
-   * small for the radar's largest block once running, the water mask (6 KB;
-   * a session's largest is 2.3 KB). With mbedTLS's record buffers reserved at
-   * boot (services::tls), ~9 KB is the radar's usual largest piece for days.
+   * The largest free piece of the heap Wi-Fi can use (DRAM: the RTC heap's
+   * ~7.9 KB piece would always pass) below this for low_memory_ms: the heap
+   * is cut too small for the radar's largest block once running, the water
+   * mask (6 KB; a session's largest is 2.3 KB). With mbedTLS's record buffers
+   * reserved at boot (services::tls), ~9 KB is DRAM's usual largest piece.
    */
   size_t low_memory_block = 6 * 1024 + 512;
   /**

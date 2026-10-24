@@ -24,11 +24,15 @@ Releases are installed over the air by radars running an earlier release
   short of memory.
 - Fix: a web page loaded while the radar was fetching flights could leave
   Wi-Fi almost no memory: the page came out cut short and the fetch failed.
-  The two now take turns, so a page asked for during a fetch waits a
-  second or two.
-- The low-memory restart now waits for the largest free piece of memory to
-  stay under 6.5 KB (was 8 KB): with the buffers set aside, ~9 KB is normal,
-  and nothing the radar asks for once running needs more than 6 KB.
+  The two now take turns, so a page asked for during a fetch waits for it
+  (about 4 seconds at most); one asked for while a request is waiting out a
+  timeout is served after 8 seconds. A request that finds no room because a
+  page is being sent no longer counts toward the low-memory restart.
+- The low-memory restart now looks at the memory Wi-Fi can use, and waits
+  for its largest free piece to stay under 6.5 KB (was 8 KB of all memory,
+  which a small separate area nearly always passed): with the buffers set
+  aside, ~9 KB is normal, and nothing the radar asks for once running needs
+  more than 6 KB.
 
 ## v2.0.13
 

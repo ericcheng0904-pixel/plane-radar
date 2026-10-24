@@ -697,7 +697,7 @@ FetchResult fetchUpdate(double center_lat, double center_lon, float fetch_radius
   if (!services::tls::enoughMemory()) {
     Serial.printf("adsb: not enough memory for HTTPS (free %u, largest block %u) - skipped\n",
                   static_cast<unsigned>(ESP.getFreeHeap()),
-                  static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+                  static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_DMA)));
     services::tls::noteNoRoom();
     s_last_http_status = 0;
     return FetchResult::kFailed;  // the radar's problem, not the feed's: no failover

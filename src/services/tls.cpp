@@ -100,6 +100,11 @@ bool s_reserve_failed = false;
  */
 volatile bool s_alloc_failed = false;
 
+/** The heap Wi-Fi can use (services::memory's kWifiHeap): the RTC heap's ~7.9 KB piece is not. */
+size_t largestWifiBlock() {
+  return heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_DMA);
+}
+
 /** mbedTLS's calloc() once the buffers are reserved: a slot for a record buffer. */
 void* reservedCalloc(size_t n, size_t size) {
   portENTER_CRITICAL(&s_slots_lock);
@@ -149,7 +154,7 @@ void reserveIfWanted() {
       s_reserve_failed = true;
       Serial.printf("tls: no room to reserve the record buffers yet (free %u, largest %u)\n",
                     static_cast<unsigned>(ESP.getFreeHeap()),
-                    static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+                    static_cast<unsigned>(largestWifiBlock()));
     }
     return;
   }
@@ -163,9 +168,11 @@ void reserveIfWanted() {
   // mbedTLS's own free, so blocks taken before the switch go back as before.
   mbedtls_platform_set_calloc_free(idfMbedtlsCalloc, reservedFree);
   mbedtls_platform_set_calloc_free(reservedCalloc, reservedFree);
-  Serial.printf("tls: record buffers reserved (2 x %u bytes), heap free %u (largest %u)\n",
-                static_cast<unsigned>(kRecordBytes), static_cast<unsigned>(ESP.getFreeHeap()),
-                static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+  Serial.printf(
+      "tls: record buffers reserved (2 x %u bytes), heap free %u (largest %u, %u with the RTC heap)\n",
+      static_cast<unsigned>(kRecordBytes), static_cast<unsigned>(ESP.getFreeHeap()),
+      static_cast<unsigned>(largestWifiBlock()),
+      static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
 }
 
 size_t indexOf(Host host) { return static_cast<size_t>(host); }
@@ -199,13 +206,35 @@ constexpr unsigned long kYieldMs = 30;
  * A session holding the turn longer than this is waiting out a timeout
  * (connect 5 s, handshake 12 s, headers and body 8 s each), not streaming
  * an answer: pages are served beside it, as before the turns, rather than
- * leave a browser waiting half a minute.
+ * leave a browser waiting half a minute. Measured on the radar: an ordinary
+ * flight fetch holds it 3.7-4.1 s, a route lookup that times out 6 s. Lower
+ * and pages share the heap with ordinary fetches again (at 3 s the heap
+ * Wi-Fi can use fell to ~1 KB under page loads, as without the turns).
  */
-constexpr unsigned long kPageHoldMaxMs = 3000;
+constexpr unsigned long kPageHoldMaxMs = 8000;
 /** When the fetch task took the turn; 0 while it does not have it. */
 volatile unsigned long s_sessions_since_ms = 0;
 /** The main loop has the turn (not serving beside a long session). Main loop only. */
 bool s_pages_have_turn = false;
+/** A web page is being served, with the turn or beside a long session. */
+volatile bool s_page_in_flight = false;
+/**
+ * The fetch task's current session shares the heap with a web page: it went
+ * ahead without the turn, or a page is served beside it. A shortage it meets
+ * is the page's, not a heap cut into pieces, and is not counted toward the
+ * low-memory restart. Cleared as each session begins.
+ */
+volatile bool s_session_shared = false;
+
+/** Whether a shortage just met counts toward the low-memory restart. */
+bool countsAsNoRoom() {
+  if (s_session_shared) {
+    Serial.println("tls: no room beside a web page - not counted");
+    return false;
+  }
+  return true;
+}
+
 
 }  // namespace
 
@@ -266,11 +295,17 @@ bool noteResult(WiFiClientSecure& client, Host host, int http_code) {
 }
 
 void noteNoRoom() {
+  if (!countsAsNoRoom()) {
+    return;
+  }
   s_no_room_run.noRoom();
   s_no_room = s_no_room_run.inARow();
 }
 
 void noteNoRoomForAnswer() {
+  if (!countsAsNoRoom()) {
+    return;
+  }
   s_no_room_run.noRoomForAnswer();
   s_no_room = s_no_room_run.inARow();
 }
@@ -282,12 +317,20 @@ bool verifying(Host host) { return s_verify[indexOf(host)]; }
 void reserveRecordBuffers() { s_reserve_wanted = true; }
 
 void beginSessions() {
+  s_session_shared = false;
+  const unsigned long start = millis();
   s_sessions_have_turn = xSemaphoreTake(turn(), pdMS_TO_TICKS(kPageWaitMs)) == pdTRUE;
+  // A page served beside the last, long session may still be going out:
+  // waited for in the same budget.
+  while (s_sessions_have_turn && s_page_in_flight && millis() - start < kPageWaitMs) {
+    delay(20);
+  }
   if (s_sessions_have_turn) {
     const unsigned long now = millis();
     s_sessions_since_ms = now != 0 ? now : 1;
   }
-  if (!s_sessions_have_turn) {
+  if (!s_sessions_have_turn || s_page_in_flight) {
+    s_session_shared = true;
     Serial.printf("tls: a web page held the network for %lu s - going ahead (free %u)\n",
                   kPageWaitMs / 1000, static_cast<unsigned>(ESP.getFreeHeap()));
     return;
@@ -303,7 +346,11 @@ void endSessions() {
   if (s_sessions_have_turn) {
     s_sessions_have_turn = false;
     s_sessions_since_ms = 0;
-    s_free_after_sessions = ESP.getFreeHeap();
+    if (!s_session_shared) {
+      // Not while a page's send buffers are out: that level is not one to
+      // wait for.
+      s_free_after_sessions = ESP.getFreeHeap();
+    }
     xSemaphoreGive(turn());
     // A page waiting in the backlog goes next, not after the session that
     // follows (a fetch's routes): the main loop asks for the turn every 10 ms.
@@ -313,14 +360,19 @@ void endSessions() {
 
 bool beginPages() {
   s_pages_have_turn = xSemaphoreTake(turn(), 0) == pdTRUE;
-  if (s_pages_have_turn) {
-    return true;
+  if (!s_pages_have_turn) {
+    const unsigned long since = s_sessions_since_ms;
+    if (since == 0 || millis() - since < kPageHoldMaxMs) {
+      return false;
+    }
+    s_session_shared = true;
   }
-  const unsigned long since = s_sessions_since_ms;
-  return since != 0 && millis() - since >= kPageHoldMaxMs;
+  s_page_in_flight = true;
+  return true;
 }
 
 void endPages() {
+  s_page_in_flight = false;
   if (s_pages_have_turn) {
     s_pages_have_turn = false;
     xSemaphoreGive(turn());
@@ -333,8 +385,7 @@ bool enoughMemory() {
   portEXIT_CRITICAL(&s_slots_lock);
   const size_t min_block = reserved ? kReservedMinLargestBlock : kMinLargestBlock;
   const size_t min_free = reserved ? kReservedMinFreeHeap : kMinFreeHeap;
-  return heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) >= min_block &&
-         ESP.getFreeHeap() >= min_free;
+  return largestWifiBlock() >= min_block && ESP.getFreeHeap() >= min_free;
 }
 
 }  // namespace services::tls
